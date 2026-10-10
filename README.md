@@ -1,3 +1,7 @@
+<p align="center">
+  <img src="img/ServosAreGoLogo.png" alt="ServosAreGo" width="600">
+</p>
+
 # ServosAreGo
 
 ESP32 と半二重通信回路を使って、**各社のシリアルサーボと PWM サーボ**を
@@ -327,6 +331,7 @@ ESP32 からサーボへの送信（TX）だけで、サーボが動くかを確
 ServosAreGo/
 ├── README.md                     この説明
 ├── docs/                         種類ごとの詳しい説明（統合前の README を元にしたもの）
+├── img/ServosAreGoLogo.png       ロゴ
 └── ServosAreGo/                  PlatformIO プロジェクト
     ├── platformio.ini
     ├── ServosAreGo.code-workspace
