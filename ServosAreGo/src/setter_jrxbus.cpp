@@ -640,6 +640,13 @@ u8 scanServos(int maxId, u8 *foundServos, u16 *foundModels)
   return foundCount;
 }
 
+// 見つかったIDにターゲットとリストを自動設定（出力はOFFに戻る）
+void applyFoundServos(const u8 *ids, u8 count)
+{
+  setSyncServoList(ids, count);
+  targetServoID = syncServoIDs[0];
+}
+
 // [f]コマンド: サーボ認識
 void executeServoDetectionCommand()
 {
@@ -702,9 +709,7 @@ void executeServoDetectionCommand()
   }
   Serial.println();
 
-  // 見つかったIDにターゲットとリストを自動設定（出力はOFFに戻る）
-  setSyncServoList(foundServos, foundCount);
-  targetServoID = syncServoIDs[0];
+  applyFoundServos(foundServos, foundCount);
 
   Serial.print("Target ID auto-set to: ");
   Serial.println(targetServoID);
@@ -722,13 +727,12 @@ void executeChangeTargetIdCommand()
   Serial.println("Enter new target ID (1-50): ");
 
   long newId;
-  if (!parseNumber(readInput(), &newId) || newId < XBUS_ID_MIN || newId > XBUS_ID_MAX)
+  if (!parseNumber(readInput(), &newId) || !apiSetTarget(newId))
   {
     Serial.println("Error: ID out of range (1-50)");
     return;
   }
 
-  targetServoID = newId;
   Serial.print("Target ID changed to: ");
   Serial.println(targetServoID);
 }
@@ -743,18 +747,30 @@ void executeSetSyncServoIDsCommand()
 
   u8 newIDs[MAX_SYNC_SERVOS];
   int newCount = parseIdList(readInput(), newIDs);
-  if (newCount < 0)
+  if (newCount < 0 || !apiSetSync(newIDs, newCount))
   {
     Serial.println("Error: Invalid ID list (valid IDs: 1-50)");
     return;
   }
 
-  setSyncServoList(newIDs, newCount);
   Serial.print("Sync servo IDs changed to: ");
   printSyncServoIDs();
   Serial.print(" (");
   Serial.print(syncServoCount);
   Serial.println(" servos, Output: OFF)");
+}
+
+// 現在位置と角度モードを読み取る（[r]とブラウザ用APIで共有）
+XBusResult readServoPosition(u8 id, u16 *position, bool *angle180)
+{
+  long value;
+  XBusResult result = xbusGet(id, ORDER_CURRENT_POS, &value);
+  if (result != XBUS_OK)
+    return result;
+
+  *position = value & 0xFFFF;
+  *angle180 = isAngle180(id);
+  return XBUS_OK;
 }
 
 // [r]コマンド: サーボ位置読み取り
@@ -763,8 +779,9 @@ void executeReadPositionCommand()
   Serial.print("Reading position from servo ID ");
   Serial.println(targetServoID);
 
-  long value;
-  XBusResult result = xbusGet(targetServoID, ORDER_CURRENT_POS, &value);
+  u16 position;
+  bool angle180;
+  XBusResult result = readServoPosition(targetServoID, &position, &angle180);
   if (result != XBUS_OK)
   {
     Serial.print("Error: ");
@@ -772,8 +789,6 @@ void executeReadPositionCommand()
     return;
   }
 
-  u16 position = value & 0xFFFF;
-  bool angle180 = isAngle180(targetServoID);
   Serial.print("Position: 0x");
   Serial.print(position, HEX);
   Serial.print(" (");
@@ -850,7 +865,7 @@ void executeReadAllPositionsCommand()
   Serial.println(syncServoCount);
 }
 
-// [c]コマンド: 全サーボ位置を中央にリセット
+// [c]コマンド: 全サーボ位置を中央にリセット（入力なし。ブラウザ用APIからも呼ぶ）
 void executeResetAllPositionsCommand()
 {
   Serial.print("Resetting ");
@@ -872,14 +887,17 @@ void executeAngleCommand()
   Serial.println("Enter angle (-90 to 90 degrees. 120° mode servos are limited to -60 to 60): ");
 
   String input = readInput();
-  float angle = input.toFloat();
 
-  // 角度範囲チェック
-  if (input.length() == 0 || angle < -90.0 || angle > 90.0)
-  {
+  // 角度範囲チェック（範囲外ならapiMoveがfalse）
+  if (input.length() == 0 || !apiMove(input.toFloat()))
     Serial.println("Error: Angle out of range (-90 to 90)");
-    return;
-  }
+}
+
+// 一斉制御リストを角度へ（[x]の本体。範囲外ならfalse）
+bool apiMove(float angle)
+{
+  if (angle < -90.0 || angle > 90.0)
+    return false;
 
   // サーボごとに角度モードを確認して位置値に換算（900-2100usの範囲に制限）
   u16 positions[MAX_SYNC_SERVOS];
@@ -903,9 +921,10 @@ void executeAngleCommand()
 
   moveSyncServos(positions);
   Serial.println("Angle command sent successfully (Output: ON)");
+  return true;
 }
 
-// [e]コマンド: 出力ON（現在位置を読み取り、その位置で保持を開始）
+// [e]コマンド: 出力ON（現在位置を読み取り、その位置で保持を開始。入力なし。ブラウザ用APIからも呼ぶ）
 void executeOutputOnCommand()
 {
   Serial.print("Output ON for ");
@@ -950,7 +969,7 @@ void executeOutputOnCommand()
   Serial.println(syncServoCount);
 }
 
-// [d]コマンド: 出力OFF（位置0を送って即座に脱力させてから送信停止）
+// [d]コマンド: 出力OFF（位置0を送って即座に脱力させてから送信停止。入力なし。ブラウザ用APIからも呼ぶ）
 void executeOutputOffCommand()
 {
   u16 positions[MAX_SYNC_SERVOS];
@@ -1141,33 +1160,19 @@ void executeChangeIdByBroadcast()
   Serial.println("If the servo moved, the ID change succeeded. Target ID and sync servo IDs are set to it.");
 }
 
-// [i]コマンド: サーボID変更
-void executeChangeServoIdCommand()
+// IDを変更する（[i]の本体。旧IDの応答確認は呼び出し側で行う）。新IDで応答すればtrue
+bool changeServoId(u8 oldId, long newId)
 {
-  Serial.print("Current target servo ID: ");
-  Serial.println(targetServoID);
-
-  // 変更元サーボの存在確認（応答がなければ受信なしのブロードキャスト変更を提案）
-  if (xbusPing(targetServoID, NULL, RESPONSE_TIMEOUT) != XBUS_OK)
-  {
-    Serial.println("No response from target servo.");
-    executeChangeIdByBroadcast();
-    return;
-  }
-
-  Serial.println("Enter new servo ID (1-50): ");
-
-  long newId;
-  if (!parseNumber(readInput(), &newId) || newId < XBUS_ID_MIN || newId > XBUS_ID_MAX)
+  if (newId < XBUS_ID_MIN || newId > XBUS_ID_MAX)
   {
     Serial.println("Error: ID out of range (1-50)");
-    return;
+    return false;
   }
 
-  if (newId == targetServoID)
+  if (newId == oldId)
   {
     Serial.println("New ID is the same as current ID. Nothing to do.");
-    return;
+    return false;
   }
 
   // ID重複チェック
@@ -1176,24 +1181,24 @@ void executeChangeServoIdCommand()
     Serial.print("Error: ID ");
     Serial.print(newId);
     Serial.println(" is already in use");
-    return;
+    return false;
   }
 
   Serial.print("Changing servo ID ");
-  Serial.print(targetServoID);
+  Serial.print(oldId);
   Serial.print(" -> ");
   Serial.println(newId);
 
   // ID設定モードに切り替え → 新ID書き込み（JR PROPO XBusServoライブラリと同じ手順）
-  XBusResult result = xbusSet(targetServoID, ORDER_MODE, XBUS_MODE_ID_SET);
+  XBusResult result = xbusSet(oldId, ORDER_MODE, XBUS_MODE_ID_SET);
   if (result != XBUS_OK)
   {
     Serial.print("Error: Failed to enter ID set mode (");
     Serial.print(xbusResultText(result));
     Serial.println(")");
-    return;
+    return false;
   }
-  xbusSet(targetServoID, ORDER_ID, newId); // 応答IDが新旧どちらでも最後にPINGで確認
+  xbusSet(oldId, ORDER_ID, newId); // 応答IDが新旧どちらでも最後にPINGで確認
   delay(50);
 
   // 新IDで応答確認
@@ -1201,7 +1206,7 @@ void executeChangeServoIdCommand()
   {
     Serial.println("Verification failed: No response at new ID");
     Serial.println("Hint: Use [f] to scan servos");
-    return;
+    return false;
   }
 
   // 一斉制御リスト内の旧IDも新IDに置き換え（昇順を維持）
@@ -1211,7 +1216,7 @@ void executeChangeServoIdCommand()
   for (u8 i = 0; i < syncServoCount; i++)
   {
     u8 id = syncServoIDs[i];
-    if (id == targetServoID)
+    if (id == oldId)
     {
       inserted = true;
       continue;
@@ -1234,6 +1239,33 @@ void executeChangeServoIdCommand()
   targetServoID = newId;
   Serial.print("Servo ID changed successfully [OK]. Target ID is now ");
   Serial.println(targetServoID);
+  return true;
+}
+
+// [i]コマンド: サーボID変更
+void executeChangeServoIdCommand()
+{
+  Serial.print("Current target servo ID: ");
+  Serial.println(targetServoID);
+
+  // 変更元サーボの存在確認（応答がなければ受信なしのブロードキャスト変更を提案）
+  if (xbusPing(targetServoID, NULL, RESPONSE_TIMEOUT) != XBUS_OK)
+  {
+    Serial.println("No response from target servo.");
+    executeChangeIdByBroadcast();
+    return;
+  }
+
+  Serial.println("Enter new servo ID (1-50): ");
+
+  long newId;
+  if (!parseNumber(readInput(), &newId))
+  {
+    Serial.println("Error: ID out of range (1-50)");
+    return;
+  }
+
+  changeServoId(targetServoID, newId);
 }
 
 // [m]コマンド: サーボのバージョン情報（型番/バージョン）読み取り
@@ -1410,7 +1442,7 @@ bool sweepIdRange(u8 firstId, u8 lastId, unsigned long duration, bool stopOnInpu
   return interrupted;
 }
 
-// [t]コマンド: 送信テスト（ID1-50全員に位置指令を送り、約5秒往復。受信不要でTX側の確認用）
+// [t]コマンド: 送信テスト（ID1-50全員に位置指令を送り、約5秒往復。受信不要でTX側の確認用。ブラウザ用APIからも呼ぶ）
 void executeTxTestCommand()
 {
   Serial.println("TX test: sending channel data to ALL IDs (1-50) for 5 s (sweep +/-30 deg).");
@@ -1783,7 +1815,7 @@ void loop()
   // シリアル入力チェック
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "x")
@@ -1862,6 +1894,10 @@ void loop()
     {
       executeFindIdByMotionCommand();
     }
+    else if (command.startsWith("@"))
+    {
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
+    }
     else if (command == "h")
     {
       selectServoTypeAndRestart();
@@ -1893,6 +1929,153 @@ bool detect()
     if (xbusPing(id, NULL, SCAN_TIMEOUT) == XBUS_OK)
       return true;
   }
+  return false;
+}
+
+// ===== ブラウザ用API =====
+
+// 今の状態と、XBUSでできること
+void apiGetInfo(ApiInfo *info)
+{
+  info->idMin = XBUS_ID_MIN;
+  info->idMax = XBUS_ID_MAX;
+  info->angleMin = -90.0; // [x]と同じ（120度モードのサーボは±60度に制限される）
+  info->angleMax = 90.0;
+  info->bauds = NULL; // 250000bps固定
+  info->baudCount = 0;
+  info->baudIndex = -1;
+  info->baud = XBUS_BAUD_RATE;
+  info->target = targetServoID;
+  info->syncIds = syncServoIDs;
+  info->syncCount = syncServoCount;
+  info->oneServoForId = false; // アドレス指定でID変更する（ブロードキャスト変更は[i]の対話だけ）
+}
+
+// [f]と同じ検索（ID1-maxId。50を超える指定は50まで）。見つかればターゲットとリストも設定
+int apiScan(int maxId, ApiServo *found, int maxCount)
+{
+  static u8 foundServos[MAX_SYNC_SERVOS];
+  static u16 foundModels[MAX_SYNC_SERVOS];
+
+  if (maxId < XBUS_ID_MIN)
+    return -1;
+  if (maxId > XBUS_ID_MAX)
+    maxId = XBUS_ID_MAX;
+
+  Serial.print("Scanning servos from ID1 to ID");
+  Serial.print(maxId);
+  Serial.print(" at ");
+  Serial.print(XBUS_BAUD_RATE);
+  Serial.println(" bps...");
+
+  u8 foundCount = scanServos(maxId, foundServos, foundModels);
+  if (foundCount > 0)
+    applyFoundServos(foundServos, foundCount);
+
+  int count = 0;
+  for (u8 i = 0; i < foundCount && count < maxCount; i++)
+  {
+    found[count].id = foundServos[i];
+    strncpy(found[count].model, modelName(foundModels[i]), API_MODEL_LEN - 1);
+    found[count].model[API_MODEL_LEN - 1] = '\0';
+    count++;
+  }
+  return count;
+}
+
+// ターゲットID変更（[z]と同じ範囲チェック）
+bool apiSetTarget(int id)
+{
+  if (id < XBUS_ID_MIN || id > XBUS_ID_MAX)
+    return false;
+  targetServoID = id;
+  return true;
+}
+
+// 一斉制御リスト設定（[n]と同じ。昇順・重複なしに並べ替え、出力OFF・目標は中央）
+bool apiSetSync(const uint8_t *ids, uint8_t count)
+{
+  if (count == 0)
+    return false;
+
+  bool selected[XBUS_ID_MAX + 1] = {false};
+  for (u8 i = 0; i < count; i++)
+  {
+    if (ids[i] < XBUS_ID_MIN || ids[i] > XBUS_ID_MAX)
+      return false;
+    selected[ids[i]] = true;
+  }
+
+  u8 list[MAX_SYNC_SERVOS];
+  u8 listCount = 0;
+  for (int id = XBUS_ID_MIN; id <= XBUS_ID_MAX; id++)
+  {
+    if (selected[id])
+      list[listCount++] = id;
+  }
+  setSyncServoList(list, listCount);
+  return true;
+}
+
+// 一斉制御リストを中央へ（[c]と同じ）
+bool apiCenter()
+{
+  executeResetAllPositionsCommand();
+  return true;
+}
+
+// ON: [e]と同じ（現在位置で保持）, OFF: [d]と同じ（位置0で脱力して送信停止）
+bool apiTorque(bool on)
+{
+  if (on)
+    executeOutputOnCommand();
+  else
+    executeOutputOffCommand();
+  return true;
+}
+
+// 送信テスト（[t]と同じ）
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
+}
+
+// 現在位置を角度で読む（[r]と同じ換算。180度モードも考慮）
+bool apiReadPosition(int id, float *deg)
+{
+  if (id < XBUS_ID_MIN || id > XBUS_ID_MAX)
+    return false;
+
+  u16 position;
+  bool angle180;
+  if (readServoPosition(id, &position, &angle180) != XBUS_OK)
+    return false;
+
+  *deg = positionToAngle(position, angle180);
+  return true;
+}
+
+// ID変更（[i]のアドレス指定の手順。旧IDが応答しなければfalse）
+bool apiSetId(int oldId, int newId)
+{
+  if (oldId < XBUS_ID_MIN || oldId > XBUS_ID_MAX)
+    return false;
+
+  if (xbusPing(oldId, NULL, RESPONSE_TIMEOUT) != XBUS_OK)
+  {
+    Serial.println("No response from target servo.");
+    return false;
+  }
+
+  return changeServoId(oldId, newId);
+}
+
+// XBUSは250000bps固定のため変更できない
+bool apiSetBaud(int index, bool servoToo)
+{
+  (void)index;
+  (void)servoToo;
   return false;
 }
 

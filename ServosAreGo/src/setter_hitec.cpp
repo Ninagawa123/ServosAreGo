@@ -209,11 +209,13 @@ static void __attribute__((noinline)) IRAM_ATTR hmiFrameReplyBytes(uart_dev_t *h
 
     // 線を開放してサーボに書き込ませる
     busTxOutput(pinTxRelease, false);
-    gpio_ll_set_level(&GPIO, (gpio_num_t)pinDir, 0);
+    if (pinDir >= 0) // ② 半二重回路なしではENピンを使わない
+      gpio_ll_set_level(&GPIO, (gpio_num_t)pinDir, 0);
     ets_delay_us(releaseUs);
 
     // 送信方向に戻す（この時点のTXはデータ0=HIGH、続いてUARTがストップビット=LOWを出す）
-    gpio_ll_set_level(&GPIO, (gpio_num_t)pinDir, 1);
+    if (pinDir >= 0)
+      gpio_ll_set_level(&GPIO, (gpio_num_t)pinDir, 1);
     busTxOutput(pinTxRelease, true);
 
     // ストップビット（LOW）に入るのを待つ（次のスタートビット検出のため）
@@ -543,37 +545,10 @@ void moveSyncServos(u16 pulseUs)
 
 // ===== コマンド =====
 
-// [f]コマンド: サーボ認識（接続中の1台のバージョンとIDを読み取り）
+// [f]コマンド: サーボ認識（接続中の1台のバージョンとIDを読み取り。中身は apiScan()）
 void executeServoDetectionCommand()
 {
-  Serial.println("Reading version and ID (HMI read commands have no ID: connect only ONE servo)...");
-
-  u8 version, id;
-  HmiResult result = hmiReadVersionId(&version, &id);
-  if (result != HMI_OK)
-  {
-    Serial.print("Error: ");
-    Serial.println(hmiResultText(result));
-    Serial.println("Hint: Use [t] to check TX, [g] to see raw received bytes, [u] to switch signal polarity");
-    return;
-  }
-
-  Serial.print("Found servo: version 0x");
-  Serial.print(version, HEX);
-  Serial.print(", ID ");
-  Serial.println(id);
-
-  if (id > HMI_ID_MAX)
-  {
-    Serial.println("[Warning] ID is out of range (0-127). Reply may be corrupted.");
-    return;
-  }
-
-  targetServoID = id;
-  syncServoIDs[0] = id;
-  syncServoCount = 1;
-  Serial.print("Target ID and sync servo IDs auto-set to: ");
-  Serial.println(id);
+  apiScan(HMI_ID_MAX, NULL, 0);
 }
 
 // [z]コマンド: ターゲットID変更
@@ -584,15 +559,12 @@ void executeChangeTargetIdCommand()
   Serial.println("Enter new target ID (0-127): ");
 
   long newId;
-  if (!parseNumber(readInput(), &newId) || newId < HMI_ID_MIN || newId > HMI_ID_MAX)
+  if (!parseNumber(readInput(), &newId))
   {
     Serial.println("Error: ID out of range (0-127)");
     return;
   }
-
-  targetServoID = newId;
-  Serial.print("Target ID changed to: ");
-  Serial.println(targetServoID);
+  apiSetTarget(newId);
 }
 
 // [n]コマンド: 一斉制御サーボIDリスト設定
@@ -610,39 +582,14 @@ void executeSetSyncServoIDsCommand()
     Serial.println("Error: Invalid ID list (valid IDs: 0-127)");
     return;
   }
-
-  memcpy(syncServoIDs, newIDs, newCount);
-  syncServoCount = newCount;
-  Serial.print("Sync servo IDs changed to: ");
-  printSyncServoIDs();
-  Serial.print(" (");
-  Serial.print(syncServoCount);
-  Serial.println(" servos)");
+  apiSetSync(newIDs, newCount);
 }
 
-// [r]コマンド: サーボ位置読み取り（0xE9: 速度設定も同時に送られる）
+// [r]コマンド: サーボ位置読み取り（0xE9: 速度設定も同時に送られる。中身は apiReadPosition()）
 void executeReadPositionCommand()
 {
-  Serial.print("Reading position from servo ID ");
-  Serial.print(targetServoID);
-  Serial.print(" (speed 0x");
-  Serial.print(servoSpeed, HEX);
-  Serial.println(" is also sent)...");
-
-  u16 pulseUs;
-  HmiResult result = hmiSetSpeedReadPosition(targetServoID, servoSpeed, &pulseUs);
-  if (result != HMI_OK)
-  {
-    Serial.print("Error: ");
-    Serial.println(hmiResultText(result));
-    return;
-  }
-
-  Serial.print("Position: ");
-  Serial.print(pulseUs);
-  Serial.print("us (");
-  Serial.print(pulseToAngle(pulseUs), 1);
-  Serial.println("deg)");
+  float deg;
+  apiReadPosition(targetServoID, &deg);
 }
 
 // [v]コマンド: 電圧・駆動パルス幅読み取り（0xE8, 宛先IDなし）
@@ -690,44 +637,45 @@ void executeReadVersionCommand()
   Serial.println(id);
 }
 
-// [i]コマンド: サーボID変更（EEPROM 0x29 書き込み + チェックサム 0x2C 更新。1台のみ接続）
-void executeChangeServoIdCommand()
+// [i]の前半: 接続中の1台の現在のIDを読み、EEPROMのIDと一致するか確認。成功時true
+bool readCurrentServoId(u8 *currentId)
 {
   Serial.println("[Warning] Connect only ONE servo. Do not power off during writing.");
 
   // 現在のIDを確認
-  u8 version, currentId;
-  HmiResult result = hmiReadVersionId(&version, &currentId);
+  u8 version;
+  HmiResult result = hmiReadVersionId(&version, currentId);
   if (result != HMI_OK)
   {
     Serial.print("Error: Cannot read current ID (");
     Serial.print(hmiResultText(result));
     Serial.println(")");
-    return;
+    return false;
   }
 
   // EEPROMのIDが0xE7で読んだIDと一致するか確認
   u8 eepromId;
-  if (hmiReadEeprom(EEPROM_ADDR_ID, &eepromId) != HMI_OK || eepromId != currentId)
+  if (hmiReadEeprom(EEPROM_ADDR_ID, &eepromId) != HMI_OK || eepromId != *currentId)
   {
     Serial.println("Error: EEPROM ID does not match the ID read by 0xE7. Aborted.");
-    return;
+    return false;
   }
+  return true;
+}
 
-  Serial.print("Current servo ID: ");
-  Serial.println(currentId);
-  Serial.println("Enter new servo ID (0-127): ");
-
-  long newId;
-  if (!parseNumber(readInput(), &newId) || newId < HMI_ID_MIN || newId > HMI_ID_MAX)
+// [i]の後半: 現在のIDから新しいIDへ書き換え（EEPROM 0x29 + チェックサム更新, 読み返し確認）。成功時true
+bool changeServoId(u8 currentId, long newId)
+{
+  u8 version;
+  if (newId < HMI_ID_MIN || newId > HMI_ID_MAX)
   {
     Serial.println("Error: ID out of range (0-127)");
-    return;
+    return false;
   }
   if (newId == currentId)
   {
     Serial.println("New ID is the same as current ID. Nothing to do.");
-    return;
+    return true;
   }
 
   // ID書き込み → チェックサム更新（両方そろわないとモータが動かなくなる）
@@ -738,7 +686,7 @@ void executeChangeServoIdCommand()
 
   u8 data[1] = {(u8)newId};
   if (!writeEepromSafely(EEPROM_ADDR_ID, data, 1))
-    return;
+    return false;
 
   targetServoID = newId;
   syncServoIDs[0] = newId;
@@ -751,15 +699,33 @@ void executeChangeServoIdCommand()
     Serial.println("New ID is active.");
   else
     Serial.println("New ID is saved. Power-cycle the servo to apply it.");
+  return true;
 }
 
-// [c]コマンド: 全サーボ位置を中央にリセット
+// [i]コマンド: サーボID変更（EEPROM 0x29 書き込み + チェックサム 0x2C 更新。1台のみ接続）
+void executeChangeServoIdCommand()
+{
+  u8 currentId;
+  if (!readCurrentServoId(&currentId))
+    return;
+
+  Serial.print("Current servo ID: ");
+  Serial.println(currentId);
+  Serial.println("Enter new servo ID (0-127): ");
+
+  long newId;
+  if (!parseNumber(readInput(), &newId))
+  {
+    Serial.println("Error: ID out of range (0-127)");
+    return;
+  }
+  changeServoId(currentId, newId);
+}
+
+// [c]コマンド: 全サーボ位置を中央にリセット（中身は apiCenter()）
 void executeResetAllPositionsCommand()
 {
-  Serial.print("Resetting ");
-  Serial.print(syncServoCount);
-  Serial.println(" servos to center (1500us)...");
-  moveSyncServos(HMI_PULSE_CENTER);
+  apiCenter();
 }
 
 // [x]コマンド: 全サーボに角度を一斉送信
@@ -768,21 +734,16 @@ void executeAngleCommand()
   Serial.println("Enter angle (-95 to 95 degrees, 1 deg = 10us): ");
 
   String input = readInput();
-  float angle = input.toFloat();
-
-  // 角度範囲チェック
-  if (input.length() == 0 || angle < -95.0 || angle > 95.0)
+  if (input.length() == 0)
   {
     Serial.println("Error: Angle out of range (-95 to 95)");
     return;
   }
-
-  moveSyncServos(angleToPulse(angle));
-  Serial.println("Angle command sent successfully");
+  apiMove(input.toFloat()); // 範囲チェックは apiMove() で行う
 }
 
-// 返信が 03 06 のコマンド（0xEA/0xEB/0xEF）を送り、結果を表示
-void sendAckCommand(u8 command, u8 param1, u8 param2)
+// 返信が 03 06 のコマンド（0xEA/0xEB/0xEF）を送り、結果を表示。03 06 が返ったらtrue
+bool sendAckCommand(u8 command, u8 param1, u8 param2)
 {
   u8 reply1, reply2;
   HmiResult result = hmiTransaction(command, param1, param2, &reply1, &reply2);
@@ -790,68 +751,27 @@ void sendAckCommand(u8 command, u8 param1, u8 param2)
   {
     Serial.print("Sent. Reply: ");
     Serial.println(hmiResultText(result));
-    return;
+    return false;
   }
+  bool ok = (reply1 == 0x03 && reply2 == 0x06);
   Serial.print("Reply: 0x");
   Serial.print(reply1, HEX);
   Serial.print(" 0x");
   Serial.print(reply2, HEX);
-  Serial.println((reply1 == 0x03 && reply2 == 0x06) ? " [OK]" : " (expected 03 06)");
+  Serial.println(ok ? " [OK]" : " (expected 03 06)");
+  return ok;
 }
 
-// [d]コマンド: 脱力（0xEF, 全サーボ。手で動かせるようになる）
+// [d]コマンド: 脱力（0xEF, 全サーボ。手で動かせるようになる。中身は apiTorque(false)）
 void executeReleaseCommand()
 {
-  Serial.println("Release (0xEF): position control of ALL servos is stopped.");
-  sendAckCommand(HMI_CMD_RELEASE, 0x00, 0x00);
-  Serial.println("Note: Any move command re-enables ALL servos. Use [e] to hold at the current position.");
+  apiTorque(false);
 }
 
-// [e]コマンド: 脱力から復帰（現在位置を読み、その位置を目標にして保持）
+// [e]コマンド: 脱力から復帰（現在位置を読み、その位置を目標にして保持。中身は apiTorque(true)）
 void executeHoldCommand()
 {
-  Serial.print("Hold at current position: ");
-  Serial.print(syncServoCount);
-  Serial.print(" servos (IDs: ");
-  printSyncServoIDs();
-  Serial.println(")...");
-
-  u16 positions[MAX_SYNC_SERVOS];
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    u8 id = syncServoIDs[i];
-    if (hmiSetSpeedReadPosition(id, servoSpeed, &positions[i]) != HMI_OK ||
-        positions[i] < HMI_PULSE_MIN || positions[i] > HMI_PULSE_MAX)
-    {
-      Serial.print("Error: Cannot read position of ID ");
-      Serial.print(id);
-      Serial.println(". Aborted (no command sent).");
-      return;
-    }
-  }
-
-  // 1台のときは、手で動かした後の急な動きを防ぐため軌道目標値（RAM 0x06-0x07）を現在位置に合わせる
-  if (syncServoCount == 1)
-  {
-    hmiTransaction(HMI_CMD_WRITE_MEMORY, MEMORY_ADDR_SETPOINT_LOW, positions[0] & 0xFF, NULL, NULL);
-    hmiTransaction(HMI_CMD_WRITE_MEMORY, MEMORY_ADDR_SETPOINT_HIGH, positions[0] >> 8, NULL, NULL);
-  }
-  else
-  {
-    Serial.println("[Warning] With multiple servos, a servo moved by hand may jump toward its old target.");
-  }
-
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    hmiSetPosition(syncServoIDs[i], positions[i]);
-    Serial.print("ID ");
-    Serial.print(syncServoIDs[i]);
-    Serial.print(": hold at ");
-    Serial.print(positions[i]);
-    Serial.print("us (");
-    Serial.print(pulseToAngle(positions[i]), 1);
-    Serial.println("deg)");
-  }
+  apiTorque(true);
 }
 
 // [y]コマンド: Go/Stop（0xEB, 宛先IDなしで全サーボに届く）
@@ -1167,7 +1087,7 @@ void loop()
   // シリアル入力チェック
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "x")
@@ -1250,6 +1170,10 @@ void loop()
     {
       executeTogglePolarityCommand();
     }
+    else if (command.startsWith("@"))
+    {
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
+    }
     else if (command == "h")
     {
       selectServoTypeAndRestart();
@@ -1266,6 +1190,258 @@ void loop()
   }
 
   delay(50); // CPU負荷軽減
+}
+
+// ===== ブラウザ用API =====
+// 対話入力はしない。表示は対話メニューと同じ
+
+// 今の状態と、この種類でできること
+void apiGetInfo(ApiInfo *info)
+{
+  info->idMin = HMI_ID_MIN;
+  info->idMax = HMI_ID_MAX;
+  info->angleMin = -95.0; // [x] と同じ範囲
+  info->angleMax = 95.0;
+  info->bauds = NULL; // 19200 bps 8N2 固定
+  info->baudCount = 0;
+  info->baudIndex = -1;
+  info->baud = HMI_BAUD_RATE;
+  info->target = targetServoID;
+  info->syncIds = syncServoIDs;
+  info->syncCount = syncServoCount;
+  info->oneServoForId = true; // 0xE7 にIDがないため、検索もID変更も1台だけつなぐ
+}
+
+// [f]の中身: 接続中の1台のバージョンとIDを読み、ターゲットと一斉制御リストに設定（maxIdは使わない）
+int apiScan(int maxId, ApiServo *found, int maxCount)
+{
+  (void)maxId;
+  Serial.println("Reading version and ID (HMI read commands have no ID: connect only ONE servo)...");
+
+  u8 version, id;
+  HmiResult result = hmiReadVersionId(&version, &id);
+  if (result != HMI_OK)
+  {
+    Serial.print("Error: ");
+    Serial.println(hmiResultText(result));
+    Serial.println("Hint: Use [t] to check TX, [g] to see raw received bytes, [u] to switch signal polarity");
+    return 0;
+  }
+
+  Serial.print("Found servo: version 0x");
+  Serial.print(version, HEX);
+  Serial.print(", ID ");
+  Serial.println(id);
+
+  if (id > HMI_ID_MAX)
+  {
+    Serial.println("[Warning] ID is out of range (0-127). Reply may be corrupted.");
+    return 0;
+  }
+
+  targetServoID = id;
+  syncServoIDs[0] = id;
+  syncServoCount = 1;
+  Serial.print("Target ID and sync servo IDs auto-set to: ");
+  Serial.println(id);
+
+  if (found && maxCount > 0)
+  {
+    found[0].id = id;
+    snprintf(found[0].model, API_MODEL_LEN, "HSR v0x%02X", version);
+  }
+  return 1;
+}
+
+// [z]の中身: ターゲットID変更（0-127）
+bool apiSetTarget(int id)
+{
+  if (id < HMI_ID_MIN || id > HMI_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-127)");
+    return false;
+  }
+
+  targetServoID = id;
+  Serial.print("Target ID changed to: ");
+  Serial.println(targetServoID);
+  return true;
+}
+
+// [n]の中身: 一斉制御リスト設定（[n] と同じく昇順・重複なしにそろえる）
+bool apiSetSync(const uint8_t *ids, uint8_t count)
+{
+  bool selected[HMI_ID_MAX + 1] = {false};
+  bool valid = (count > 0);
+  for (u8 i = 0; i < count && valid; i++)
+  {
+    if (ids[i] > HMI_ID_MAX)
+      valid = false;
+    else
+      selected[ids[i]] = true;
+  }
+  if (!valid)
+  {
+    Serial.println("Error: Invalid ID list (valid IDs: 0-127)");
+    return false;
+  }
+
+  u8 newIDs[MAX_SYNC_SERVOS];
+  int newCount = 0;
+  for (int id = HMI_ID_MIN; id <= HMI_ID_MAX; id++)
+  {
+    if (selected[id])
+      newIDs[newCount++] = id;
+  }
+
+  memcpy(syncServoIDs, newIDs, newCount);
+  syncServoCount = newCount;
+  Serial.print("Sync servo IDs changed to: ");
+  printSyncServoIDs();
+  Serial.print(" (");
+  Serial.print(syncServoCount);
+  Serial.println(" servos)");
+  return true;
+}
+
+// [x]の中身: 一斉制御リストの全サーボを角度へ（位置指令で脱力からも復帰する）
+bool apiMove(float deg)
+{
+  // 角度範囲チェック
+  if (deg < -95.0 || deg > 95.0)
+  {
+    Serial.println("Error: Angle out of range (-95 to 95)");
+    return false;
+  }
+
+  moveSyncServos(angleToPulse(deg));
+  Serial.println("Angle command sent successfully");
+  return true;
+}
+
+// [c]の中身: 一斉制御リストの全サーボを中央へ
+bool apiCenter()
+{
+  Serial.print("Resetting ");
+  Serial.print(syncServoCount);
+  Serial.println(" servos to center (1500us)...");
+  moveSyncServos(HMI_PULSE_CENTER);
+  return true;
+}
+
+// [e]/[d]の中身: ON = 現在位置を読んで保持, OFF = 脱力（0xEF, 全サーボ）
+bool apiTorque(bool on)
+{
+  if (!on)
+  {
+    Serial.println("Release (0xEF): position control of ALL servos is stopped.");
+    bool ok = sendAckCommand(HMI_CMD_RELEASE, 0x00, 0x00);
+    Serial.println("Note: Any move command re-enables ALL servos. Use [e] to hold at the current position.");
+    return ok;
+  }
+
+  Serial.print("Hold at current position: ");
+  Serial.print(syncServoCount);
+  Serial.print(" servos (IDs: ");
+  printSyncServoIDs();
+  Serial.println(")...");
+
+  u16 positions[MAX_SYNC_SERVOS];
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    u8 id = syncServoIDs[i];
+    if (hmiSetSpeedReadPosition(id, servoSpeed, &positions[i]) != HMI_OK ||
+        positions[i] < HMI_PULSE_MIN || positions[i] > HMI_PULSE_MAX)
+    {
+      Serial.print("Error: Cannot read position of ID ");
+      Serial.print(id);
+      Serial.println(". Aborted (no command sent).");
+      return false;
+    }
+  }
+
+  // 1台のときは、手で動かした後の急な動きを防ぐため軌道目標値（RAM 0x06-0x07）を現在位置に合わせる
+  if (syncServoCount == 1)
+  {
+    hmiTransaction(HMI_CMD_WRITE_MEMORY, MEMORY_ADDR_SETPOINT_LOW, positions[0] & 0xFF, NULL, NULL);
+    hmiTransaction(HMI_CMD_WRITE_MEMORY, MEMORY_ADDR_SETPOINT_HIGH, positions[0] >> 8, NULL, NULL);
+  }
+  else
+  {
+    Serial.println("[Warning] With multiple servos, a servo moved by hand may jump toward its old target.");
+  }
+
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    hmiSetPosition(syncServoIDs[i], positions[i]);
+    Serial.print("ID ");
+    Serial.print(syncServoIDs[i]);
+    Serial.print(": hold at ");
+    Serial.print(positions[i]);
+    Serial.print("us (");
+    Serial.print(pulseToAngle(positions[i]), 1);
+    Serial.println("deg)");
+  }
+  return true;
+}
+
+// [t]と同じ: 送信テスト
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
+}
+
+// [r]の中身: 位置読み取り（0xE9: 今の速度設定も同時に送られる）
+bool apiReadPosition(int id, float *deg)
+{
+  if (id < HMI_ID_MIN || id > HMI_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-127)");
+    return false;
+  }
+
+  Serial.print("Reading position from servo ID ");
+  Serial.print(id);
+  Serial.print(" (speed 0x");
+  Serial.print(servoSpeed, HEX);
+  Serial.println(" is also sent)...");
+
+  u16 pulseUs;
+  HmiResult result = hmiSetSpeedReadPosition(id, servoSpeed, &pulseUs);
+  if (result != HMI_OK)
+  {
+    Serial.print("Error: ");
+    Serial.println(hmiResultText(result));
+    return false;
+  }
+
+  Serial.print("Position: ");
+  Serial.print(pulseUs);
+  Serial.print("us (");
+  Serial.print(pulseToAngle(pulseUs), 1);
+  Serial.println("deg)");
+  if (deg)
+    *deg = pulseToAngle(pulseUs);
+  return true;
+}
+
+// [i]と同じ手順でID変更（宛先IDがないため oldId は使わない。1台のみ接続）
+bool apiSetId(int oldId, int newId)
+{
+  (void)oldId;
+  u8 currentId;
+  if (!readCurrentServoId(&currentId))
+    return false;
+  return changeServoId(currentId, newId);
+}
+
+// 通信速度は 19200 bps 固定のため変更できない
+bool apiSetBaud(int index, bool servoToo)
+{
+  (void)index;
+  (void)servoToo;
+  return false;
 }
 
 // ===== サーボ種類の自動判別（起動時のメニュー [0]） =====

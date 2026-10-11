@@ -522,47 +522,11 @@ void executeReciprocationSync()
   }
 }
 
-// [r]コマンド: サーボ位置読み取り
+// [r]コマンド: サーボ位置読み取り（処理は apiReadPosition()）
 void executeReadPositionCommand()
 {
-  Serial.print("Reading position from servo ID ");
-  Serial.println(targetServoID);
-
-  // 読み取りコマンド構築
-  u8 command[8] = {0xFF, 0xFF, targetServoID, 4, CMD_READ, REG_CURRENT_POSITION, 2, 0};
-  command[7] = calcChecksum(command, 8);
-
-  // コマンド送信
-  sendCommand(command, 8);
-
-  // 応答受信（8バイト期待）
-  u8 response[8];
-  if (receiveResponse(response, 8, 100))
-  {
-    // 応答検証
-    if (response[0] == 0xFF && response[1] == 0xFF && response[2] == targetServoID)
-    {
-      u16 position = decodeU16(&response[5], servoType);
-      float angle = positionToAngle(position);
-
-      Serial.print("Position: ");
-      Serial.print(position);
-      Serial.print(" (");
-      Serial.print(angle, 1);
-      Serial.println("°)");
-    }
-    else
-    {
-      Serial.println("Invalid response received");
-    }
-  }
-  else
-  {
-    Serial.println("No response from servo");
-  }
-
-  // 送信専用モードに確実に復帰
-  busDirTx();
+  float angle;
+  apiReadPosition(targetServoID, &angle);
 }
 
 // [v]コマンド: サーボ電圧読み取り
@@ -637,18 +601,8 @@ void executeChangeTargetIdCommand()
   String input = Serial.readString();
   input.trim();
 
-  int newId = input.toInt();
-
-  // ID範囲チェック
-  if (newId < 1 || newId > 253)
-  {
-    Serial.println("Error: ID out of range (1-253)");
-    return;
-  }
-
-  targetServoID = newId;
-  Serial.print("Target ID changed to: ");
-  Serial.println(targetServoID);
+  // 範囲チェックと変更は apiSetTarget()
+  apiSetTarget(input.toInt());
 }
 
 // 一斉制御IDリストを表示（例: 1,3,7）
@@ -737,13 +691,7 @@ void executeSetSyncServoIDsCommand()
     return;
   }
 
-  memcpy(syncServoIDs, newIDs, newCount);
-  syncServoCount = newCount;
-  Serial.print("Sync servo IDs changed to: ");
-  printSyncServoIDs();
-  Serial.print(" (");
-  Serial.print(syncServoCount);
-  Serial.println(" servos)");
+  apiSetSync(newIDs, (u8)newCount);
 }
 
 // [a]コマンド: 全サーボ位置読み出し
@@ -813,34 +761,10 @@ void executeReadAllPositionsCommand()
   busDirTx();
 }
 
-// [c]コマンド: 全サーボ位置を0にリセット
+// [c]コマンド: 全サーボ位置を0にリセット（処理は apiCenter()）
 void executeResetAllPositionsCommand()
 {
-  Serial.print("Resetting ");
-  Serial.print(syncServoCount);
-  Serial.println(" servos to position 0 (center)...");
-
-  // 動的配列で一斉制御サーボ数に対応
-  s16 *allPositions = new s16[syncServoCount];
-  u16 *allSpeeds = new u16[syncServoCount];
-  u8 *allACCs = new u8[syncServoCount];
-
-  // 配列を初期化（全て位置0 = 中央位置）
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    allPositions[i] = positionCenter(); // 中央位置（0度）
-    allSpeeds[i] = 800;     // 少し遅めの速度
-    allACCs[i] = 30;        // 低い加速度
-  }
-
-  SyncWritePos(syncServoIDs, syncServoCount, allPositions, allSpeeds, allACCs);
-
-  Serial.println("All servos reset to center position");
-
-  // メモリ解放
-  delete[] allPositions;
-  delete[] allSpeeds;
-  delete[] allACCs;
+  apiCenter();
 }
 
 // PINGで指定IDのサーボ応答を確認
@@ -879,7 +803,7 @@ bool readByteRegister(u8 id, u8 address, u8 *value, unsigned long timeout)
   return ok;
 }
 
-// [f]コマンド: サーボ認識（STS/SCS系列の自動判定付き）
+// [f]コマンド: サーボ認識（STS/SCS系列の自動判定付き。処理は apiScan()）
 void executeServoDetectionCommand()
 {
   Serial.print("Enter maximum ID to scan (1-253, empty = ");
@@ -895,217 +819,21 @@ void executeServoDetectionCommand()
   String input = Serial.readString();
   input.trim();
 
-  // 空欄リターンはデフォルト最大IDで検索
+  // 空欄リターンはデフォルト最大IDで検索（範囲チェックと検索は apiScan()）
   int maxId = input.length() == 0 ? DEFAULT_SCAN_MAX_ID : input.toInt();
-
-  // ID範囲チェック
-  if (maxId < 1 || maxId > 253)
-  {
-    Serial.println("Error: ID out of range (1-253)");
-    return;
-  }
-
-  Serial.print("Scanning servos from ID1 to ID");
-  Serial.print(maxId);
-  Serial.println("...");
-  Serial.println();
-
-  u8 foundServos[254];     // 最大253個のサーボ
-  u8 foundTypes[254];      // 各サーボの系列（0xFF = 判定不能）
-  u8 foundCount = 0;
-  u8 typeCounts[2] = {0, 0}; // [STS, SCS]の検出数
-
-  // プログレス表示用
-  int progressStep = maxId / 10;
-  if (progressStep == 0)
-    progressStep = 1;
-
-  for (u8 id = 1; id <= maxId; id++)
-  {
-    // プログレス表示
-    if (id % progressStep == 0 || id == maxId)
-    {
-      Serial.print("Progress: ");
-      Serial.print((id * 100) / maxId);
-      Serial.println("%");
-    }
-
-    if (pingServo(id))
-    {
-      // アドレス2(END)で系列判定: 0=STS, 1=SCS
-      u8 endValue;
-      u8 type = 0xFF;
-      if (readByteRegister(id, REG_END, &endValue, 30) && endValue <= SERVO_TYPE_SCS)
-      {
-        type = endValue;
-        typeCounts[type]++;
-      }
-
-      foundServos[foundCount] = id;
-      foundTypes[foundCount] = type;
-      foundCount++;
-      Serial.print("Found servo ID: ");
-      Serial.print(id);
-      Serial.print(" (");
-      Serial.print(type == 0xFF ? "Unknown" : servoTypeName(type));
-      Serial.println(")");
-    }
-
-    delay(5); // 次のスキャンまで少し待機
-  }
-
-  // 結果表示
-  Serial.println();
-  Serial.println("=== Servo Detection Results ===");
-  Serial.print("Scanned range: ID1 to ID");
-  Serial.println(maxId);
-  Serial.print("Found ");
-  Serial.print(foundCount);
-  Serial.print(" servo(s): STS=");
-  Serial.print(typeCounts[SERVO_TYPE_STS]);
-  Serial.print(", SCS=");
-  Serial.println(typeCounts[SERVO_TYPE_SCS]);
-
-  if (foundCount > 0)
-  {
-    Serial.print("Connected IDs: ");
-    for (u8 i = 0; i < foundCount; i++)
-    {
-      Serial.print(foundServos[i]);
-      Serial.print("(");
-      Serial.print(foundTypes[i] == 0xFF ? "?" : servoTypeName(foundTypes[i]));
-      Serial.print(")");
-      if (i < foundCount - 1)
-        Serial.print(", ");
-    }
-    Serial.println();
-
-    // 検出結果からサーボ系列を自動設定
-    if (typeCounts[SERVO_TYPE_STS] + typeCounts[SERVO_TYPE_SCS] > 0)
-    {
-      servoType = (typeCounts[SERVO_TYPE_SCS] > typeCounts[SERVO_TYPE_STS]) ? SERVO_TYPE_SCS : SERVO_TYPE_STS;
-      Serial.print("Servo series auto-set to: ");
-      Serial.println(servoTypeName(servoType));
-
-      if (typeCounts[SERVO_TYPE_STS] > 0 && typeCounts[SERVO_TYPE_SCS] > 0)
-      {
-        Serial.println("[Warning] STS and SCS are mixed on the bus.");
-        Serial.print("          Only ");
-        Serial.print(servoTypeName(servoType));
-        Serial.println(" servos are added to sync servo IDs.");
-      }
-    }
-
-    // 見つかったIDにターゲットを自動変更（設定系列に一致する最小IDを優先）
-    targetServoID = foundServos[0];
-    for (u8 i = 0; i < foundCount; i++)
-    {
-      if (foundTypes[i] == servoType)
-      {
-        targetServoID = foundServos[i];
-        break;
-      }
-    }
-    Serial.print("Target ID auto-set to: ");
-    Serial.println(targetServoID);
-
-    // 見つかったIDを一斉制御リストに自動設定（設定系列に一致するもの。なければ全て）
-    u8 count = 0;
-    for (u8 i = 0; i < foundCount; i++)
-    {
-      if (foundTypes[i] == servoType)
-        syncServoIDs[count++] = foundServos[i];
-    }
-    if (count == 0)
-    {
-      memcpy(syncServoIDs, foundServos, foundCount);
-      count = foundCount;
-    }
-    syncServoCount = count;
-    Serial.print("Sync servo IDs auto-set to: ");
-    printSyncServoIDs();
-    Serial.println();
-  }
-  else
-  {
-    Serial.println("No servos detected");
-  }
-
-  Serial.println();
+  apiScan(maxId, NULL, 0);
 }
 
-// [e]コマンド: 全サーボトルクオン
+// [e]コマンド: 全サーボトルクオン（処理は apiTorque()）
 void executeEnableTorqueAllCommand()
 {
-  Serial.print("Enabling torque for ");
-  Serial.print(syncServoCount);
-  Serial.print(" servos (IDs: ");
-  printSyncServoIDs();
-  Serial.println(")...");
-
-  u8 successCount = 0;
-
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    u8 id = syncServoIDs[i];
-    if (EnableTorque(id, 1))
-    {
-      Serial.print("ID ");
-      Serial.print(id);
-      Serial.println(": Torque enabled");
-      successCount++;
-    }
-    else
-    {
-      Serial.print("ID ");
-      Serial.print(id);
-      Serial.println(": Failed to enable torque");
-    }
-    delay(50); // 各サーボ間で少し待機
-  }
-
-  Serial.print("Torque enabled for ");
-  Serial.print(successCount);
-  Serial.print("/");
-  Serial.print(syncServoCount);
-  Serial.println(" servos");
+  apiTorque(true);
 }
 
-// [d]コマンド: 全サーボトルクオフ
+// [d]コマンド: 全サーボトルクオフ（処理は apiTorque()）
 void executeDisableTorqueAllCommand()
 {
-  Serial.print("Disabling torque for ");
-  Serial.print(syncServoCount);
-  Serial.print(" servos (IDs: ");
-  printSyncServoIDs();
-  Serial.println(")...");
-
-  u8 successCount = 0;
-
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    u8 id = syncServoIDs[i];
-    if (EnableTorque(id, 0))
-    {
-      Serial.print("ID ");
-      Serial.print(id);
-      Serial.println(": Torque disabled");
-      successCount++;
-    }
-    else
-    {
-      Serial.print("ID ");
-      Serial.print(id);
-      Serial.println(": Failed to disable torque");
-    }
-    delay(50); // 各サーボ間で少し待機
-  }
-
-  Serial.print("Torque disabled for ");
-  Serial.print(successCount);
-  Serial.print("/");
-  Serial.print(syncServoCount);
-  Serial.println(" servos");
+  apiTorque(false);
 }
 
 // [p]コマンド: 指定アドレスのレジスタ値読み取り
@@ -1463,7 +1191,7 @@ void executeWriteRegisterCommand()
   busDirTx();
 }
 
-// [x]コマンド: 全サーボに角度を一斉送信v
+// [x]コマンド: 全サーボに角度を一斉送信（処理は apiMove()）
 void executeAngleCommand()
 {
   float halfRange = angleRange() / 2.0;
@@ -1482,55 +1210,8 @@ void executeAngleCommand()
   String input = Serial.readString();
   input.trim();
 
-  float angle = input.toFloat();
-
-  // 角度範囲チェック
-  if (angle < -halfRange || angle > halfRange)
-  {
-    Serial.println("Error: Angle out of range");
-    return;
-  }
-
-  // 角度を位置値に変換
-  s16 position = angleToPosition(angle);
-  if (position == -1)
-  {
-    Serial.println("Error: Invalid angle");
-    return;
-  }
-
-  Serial.print("Converting ");
-  Serial.print(angle);
-  Serial.print(" degrees to position ");
-  Serial.println(position);
-
-  // 動的配列で一斉制御サーボ数に対応
-  s16 *allPositions = new s16[syncServoCount];
-  u16 *allSpeeds = new u16[syncServoCount];
-  u8 *allACCs = new u8[syncServoCount];
-
-  // 配列を初期化
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    allPositions[i] = position;
-    allSpeeds[i] = 1000;
-    allACCs[i] = 50;
-  }
-
-  Serial.print("Sending angle command to ");
-  Serial.print(syncServoCount);
-  Serial.print(" servos (IDs: ");
-  printSyncServoIDs();
-  Serial.println(")...");
-
-  SyncWritePos(syncServoIDs, syncServoCount, allPositions, allSpeeds, allACCs);
-
-  Serial.println("Angle command sent successfully");
-
-  // メモリ解放
-  delete[] allPositions;
-  delete[] allSpeeds;
-  delete[] allACCs;
+  // 範囲チェックと送信は apiMove()
+  apiMove(input.toFloat());
 }
 
 // 1バイトレジスタ書き込み（応答なし、半二重通信対応）
@@ -1620,71 +1301,14 @@ void executeSetBaudRateCommand()
   String modeInput = Serial.readString();
   modeInput.trim();
 
-  if (modeInput == "1")
-  {
-    setHostBaudRate(baudIndex);
-    Serial.print("ESP32 baud rate changed to: ");
-    Serial.print(STS_BAUD_RATES[servoBaudIndex]);
-    Serial.println(" bps");
-    return;
-  }
-  else if (modeInput != "2")
+  if (modeInput != "1" && modeInput != "2")
   {
     Serial.println("Error: Invalid selection");
     return;
   }
 
-  Serial.print("Writing baud rate ");
-  Serial.print(STS_BAUD_RATES[baudIndex]);
-  Serial.print(" bps to servo ID ");
-  Serial.println(targetServoID);
-
-  // EEPROMロック解除 -> ボーレート書き込み（現在の速度で送信）
-  writeByteRegister(targetServoID, regLock(), 0);
-  delay(10);
-  writeByteRegister(targetServoID, REG_BAUD_RATE, (u8)baudIndex);
-  delay(50);
-
-  // サーボは書き込み直後に新速度へ切り替わるため、ESP32側も追従
-  setHostBaudRate(baudIndex);
-
-  // EEPROMロック（新しい速度で送信）
-  writeByteRegister(targetServoID, regLock(), 1);
-  delay(50);
-
-  // 新しい速度で読み返して確認
-  Serial.println("Verifying at new baud rate...");
-  u8 command[8] = {0xFF, 0xFF, targetServoID, 4, CMD_READ, REG_BAUD_RATE, 1, 0};
-  command[7] = calcChecksum(command, 8);
-  sendCommand(command, 8);
-
-  u8 response[7];
-  if (receiveResponse(response, 7, 100) &&
-      response[0] == 0xFF && response[1] == 0xFF && response[2] == targetServoID)
-  {
-    Serial.print("Verification: Baud rate register = ");
-    Serial.print(response[5]);
-    if (response[5] == baudIndex)
-    {
-      Serial.println(" [OK]");
-    }
-    else
-    {
-      Serial.println(" [MISMATCH]");
-    }
-  }
-  else
-  {
-    Serial.println("Verification failed: No response at new baud rate");
-    Serial.println("Hint: Use [b] -> [1] to try other ESP32 baud rates");
-  }
-
-  Serial.print("ESP32 baud rate: ");
-  Serial.print(STS_BAUD_RATES[servoBaudIndex]);
-  Serial.println(" bps");
-
-  // 送信専用モードに確実に復帰
-  busDirTx();
+  // [1] ESP32だけ / [2] サーボ + ESP32（処理は apiSetBaud()）
+  apiSetBaud(baudIndex, modeInput == "2");
 }
 
 // [i]コマンド: サーボID変更
@@ -1711,57 +1335,8 @@ void executeChangeServoIdCommand()
   String input = Serial.readString();
   input.trim();
 
-  int newId = input.toInt();
-
-  // ID範囲チェック
-  if (newId < 1 || newId > 253)
-  {
-    Serial.println("Error: ID out of range (1-253)");
-    return;
-  }
-
-  if (newId == targetServoID)
-  {
-    Serial.println("New ID is the same as current ID. Nothing to do.");
-    return;
-  }
-
-  // ID重複チェック
-  if (pingServo((u8)newId))
-  {
-    Serial.print("Error: ID ");
-    Serial.print(newId);
-    Serial.println(" is already in use");
-    return;
-  }
-
-  Serial.print("Changing servo ID ");
-  Serial.print(targetServoID);
-  Serial.print(" -> ");
-  Serial.println(newId);
-
-  // EEPROMロック解除 -> ID書き込み（旧IDで送信）
-  writeByteRegister(targetServoID, regLock(), 0);
-  delay(10);
-  writeByteRegister(targetServoID, REG_ID, (u8)newId);
-  delay(50);
-
-  // EEPROMロック（書き込み直後に新IDへ切り替わるため新IDで送信）
-  writeByteRegister((u8)newId, regLock(), 1);
-  delay(50);
-
-  // 新IDで応答確認
-  if (pingServo((u8)newId))
-  {
-    targetServoID = newId;
-    Serial.print("Servo ID changed successfully [OK]. Target ID is now ");
-    Serial.println(targetServoID);
-  }
-  else
-  {
-    Serial.println("Verification failed: No response at new ID");
-    Serial.println("Hint: Use [f] to scan servos");
-  }
+  // 範囲チェックと書き込みは apiSetId()
+  apiSetId(targetServoID, input.toInt());
 }
 
 // [m]コマンド: サーボのバージョン情報（ファームウェア/型番）読み取り
@@ -1975,7 +1550,7 @@ void loop()
   // シリアル入力チェック
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "x")
@@ -2042,6 +1617,10 @@ void loop()
     {
       executeTxTestCommand();
     }
+    else if (command.startsWith("@"))
+    {
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
+    }
     else if (command == "h")
     {
       selectServoTypeAndRestart();
@@ -2098,6 +1677,548 @@ void presetBaud(unsigned long baud)
     if (STS_BAUD_RATES[i] == baud)
       servoBaudIndex = i;
   }
+}
+
+// ===== ブラウザ用API =====
+// 対話メニューの各コマンドも、入力を受け取ったあと下の関数を呼ぶ（表示は今までどおり）
+
+// 今の状態と、この種類でできること
+void apiGetInfo(ApiInfo *info)
+{
+  float halfRange = angleRange() / 2.0;
+  info->idMin = 1;
+  info->idMax = 253;
+  info->angleMin = -halfRange; // [x]で受け付ける範囲（STS: ±180°, SCS: ±150°）
+  info->angleMax = halfRange;
+  info->bauds = STS_BAUD_RATES;
+  info->baudCount = STS_BAUD_COUNT;
+  info->baudIndex = servoBaudIndex;
+  info->baud = STS_BAUD_RATES[servoBaudIndex];
+  info->target = targetServoID;
+  info->syncIds = syncServoIDs;
+  info->syncCount = syncServoCount;
+  info->oneServoForId = false;
+}
+
+// [f]コマンドと同じ手順でサーボを検索（今の通信速度だけ）。見つかった数を返す
+int apiScan(int maxId, ApiServo *found, int maxCount)
+{
+  // ID範囲チェック
+  if (maxId < 1 || maxId > 253)
+  {
+    Serial.println("Error: ID out of range (1-253)");
+    return 0;
+  }
+
+  Serial.print("Scanning servos from ID1 to ID");
+  Serial.print(maxId);
+  Serial.println("...");
+  Serial.println();
+
+  u8 foundServos[254];     // 最大253個のサーボ
+  u8 foundTypes[254];      // 各サーボの系列（0xFF = 判定不能）
+  u8 foundCount = 0;
+  u8 typeCounts[2] = {0, 0}; // [STS, SCS]の検出数
+
+  // プログレス表示用
+  int progressStep = maxId / 10;
+  if (progressStep == 0)
+    progressStep = 1;
+
+  for (u8 id = 1; id <= maxId; id++)
+  {
+    // プログレス表示
+    if (id % progressStep == 0 || id == maxId)
+    {
+      Serial.print("Progress: ");
+      Serial.print((id * 100) / maxId);
+      Serial.println("%");
+    }
+
+    if (pingServo(id))
+    {
+      // アドレス2(END)で系列判定: 0=STS, 1=SCS
+      u8 endValue;
+      u8 type = 0xFF;
+      if (readByteRegister(id, REG_END, &endValue, 30) && endValue <= SERVO_TYPE_SCS)
+      {
+        type = endValue;
+        typeCounts[type]++;
+      }
+
+      foundServos[foundCount] = id;
+      foundTypes[foundCount] = type;
+      foundCount++;
+      Serial.print("Found servo ID: ");
+      Serial.print(id);
+      Serial.print(" (");
+      Serial.print(type == 0xFF ? "Unknown" : servoTypeName(type));
+      Serial.println(")");
+    }
+
+    delay(5); // 次のスキャンまで少し待機
+  }
+
+  // 結果表示
+  Serial.println();
+  Serial.println("=== Servo Detection Results ===");
+  Serial.print("Scanned range: ID1 to ID");
+  Serial.println(maxId);
+  Serial.print("Found ");
+  Serial.print(foundCount);
+  Serial.print(" servo(s): STS=");
+  Serial.print(typeCounts[SERVO_TYPE_STS]);
+  Serial.print(", SCS=");
+  Serial.println(typeCounts[SERVO_TYPE_SCS]);
+
+  if (foundCount > 0)
+  {
+    Serial.print("Connected IDs: ");
+    for (u8 i = 0; i < foundCount; i++)
+    {
+      Serial.print(foundServos[i]);
+      Serial.print("(");
+      Serial.print(foundTypes[i] == 0xFF ? "?" : servoTypeName(foundTypes[i]));
+      Serial.print(")");
+      if (i < foundCount - 1)
+        Serial.print(", ");
+    }
+    Serial.println();
+
+    // 検出結果からサーボ系列を自動設定
+    if (typeCounts[SERVO_TYPE_STS] + typeCounts[SERVO_TYPE_SCS] > 0)
+    {
+      servoType = (typeCounts[SERVO_TYPE_SCS] > typeCounts[SERVO_TYPE_STS]) ? SERVO_TYPE_SCS : SERVO_TYPE_STS;
+      Serial.print("Servo series auto-set to: ");
+      Serial.println(servoTypeName(servoType));
+
+      if (typeCounts[SERVO_TYPE_STS] > 0 && typeCounts[SERVO_TYPE_SCS] > 0)
+      {
+        Serial.println("[Warning] STS and SCS are mixed on the bus.");
+        Serial.print("          Only ");
+        Serial.print(servoTypeName(servoType));
+        Serial.println(" servos are added to sync servo IDs.");
+      }
+    }
+
+    // 見つかったIDにターゲットを自動変更（設定系列に一致する最小IDを優先）
+    targetServoID = foundServos[0];
+    for (u8 i = 0; i < foundCount; i++)
+    {
+      if (foundTypes[i] == servoType)
+      {
+        targetServoID = foundServos[i];
+        break;
+      }
+    }
+    Serial.print("Target ID auto-set to: ");
+    Serial.println(targetServoID);
+
+    // 見つかったIDを一斉制御リストに自動設定（設定系列に一致するもの。なければ全て）
+    u8 count = 0;
+    for (u8 i = 0; i < foundCount; i++)
+    {
+      if (foundTypes[i] == servoType)
+        syncServoIDs[count++] = foundServos[i];
+    }
+    if (count == 0)
+    {
+      memcpy(syncServoIDs, foundServos, foundCount);
+      count = foundCount;
+    }
+    syncServoCount = count;
+    Serial.print("Sync servo IDs auto-set to: ");
+    printSyncServoIDs();
+    Serial.println();
+  }
+  else
+  {
+    Serial.println("No servos detected");
+  }
+
+  Serial.println();
+
+  // 見つかったサーボを返す（型番は系列名。判定できなければ "Unknown"）
+  int n = 0;
+  for (u8 i = 0; i < foundCount && n < maxCount && found != NULL; i++)
+  {
+    found[n].id = foundServos[i];
+    strncpy(found[n].model, foundTypes[i] == 0xFF ? "Unknown" : servoTypeName(foundTypes[i]), API_MODEL_LEN - 1);
+    found[n].model[API_MODEL_LEN - 1] = '\0';
+    n++;
+  }
+  return n;
+}
+
+// [z]コマンドと同じ範囲チェックでターゲットIDを変更
+bool apiSetTarget(int id)
+{
+  // ID範囲チェック
+  if (id < 1 || id > 253)
+  {
+    Serial.println("Error: ID out of range (1-253)");
+    return false;
+  }
+
+  targetServoID = id;
+  Serial.print("Target ID changed to: ");
+  Serial.println(targetServoID);
+  return true;
+}
+
+// [n]コマンドと同じく一斉制御リストを設定（昇順・重複なしに整理）
+bool apiSetSync(const uint8_t *ids, uint8_t count)
+{
+  bool selected[254] = {false};
+  bool valid = (count > 0);
+  for (u8 i = 0; i < count && valid; i++)
+  {
+    if (ids[i] < 1 || ids[i] > 253)
+      valid = false;
+    else
+      selected[ids[i]] = true;
+  }
+  if (!valid)
+  {
+    Serial.println("Error: Invalid ID list (valid IDs: 1-253)");
+    return false;
+  }
+
+  u8 newCount = 0;
+  for (int id = 1; id <= 253; id++)
+  {
+    if (selected[id])
+      syncServoIDs[newCount++] = id;
+  }
+  syncServoCount = newCount;
+  Serial.print("Sync servo IDs changed to: ");
+  printSyncServoIDs();
+  Serial.print(" (");
+  Serial.print(syncServoCount);
+  Serial.println(" servos)");
+  return true;
+}
+
+// [x]コマンドと同じく一斉制御リストを角度へ（STS/SCSは位置指令でトルクONになる）
+bool apiMove(float deg)
+{
+  // 角度範囲チェック
+  float halfRange = angleRange() / 2.0;
+  if (deg < -halfRange || deg > halfRange)
+  {
+    Serial.println("Error: Angle out of range");
+    return false;
+  }
+
+  // 角度を位置値に変換
+  s16 position = angleToPosition(deg);
+  if (position == -1)
+  {
+    Serial.println("Error: Invalid angle");
+    return false;
+  }
+
+  Serial.print("Converting ");
+  Serial.print(deg);
+  Serial.print(" degrees to position ");
+  Serial.println(position);
+
+  // 動的配列で一斉制御サーボ数に対応
+  s16 *allPositions = new s16[syncServoCount];
+  u16 *allSpeeds = new u16[syncServoCount];
+  u8 *allACCs = new u8[syncServoCount];
+
+  // 配列を初期化
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    allPositions[i] = position;
+    allSpeeds[i] = 1000;
+    allACCs[i] = 50;
+  }
+
+  Serial.print("Sending angle command to ");
+  Serial.print(syncServoCount);
+  Serial.print(" servos (IDs: ");
+  printSyncServoIDs();
+  Serial.println(")...");
+
+  bool ok = SyncWritePos(syncServoIDs, syncServoCount, allPositions, allSpeeds, allACCs);
+
+  Serial.println("Angle command sent successfully");
+
+  // メモリ解放
+  delete[] allPositions;
+  delete[] allSpeeds;
+  delete[] allACCs;
+  return ok;
+}
+
+// [c]コマンドと同じく一斉制御リストを中央（0度）へ
+bool apiCenter()
+{
+  Serial.print("Resetting ");
+  Serial.print(syncServoCount);
+  Serial.println(" servos to position 0 (center)...");
+
+  // 動的配列で一斉制御サーボ数に対応
+  s16 *allPositions = new s16[syncServoCount];
+  u16 *allSpeeds = new u16[syncServoCount];
+  u8 *allACCs = new u8[syncServoCount];
+
+  // 配列を初期化（全て位置0 = 中央位置）
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    allPositions[i] = positionCenter(); // 中央位置（0度）
+    allSpeeds[i] = 800;     // 少し遅めの速度
+    allACCs[i] = 30;        // 低い加速度
+  }
+
+  bool ok = SyncWritePos(syncServoIDs, syncServoCount, allPositions, allSpeeds, allACCs);
+
+  Serial.println("All servos reset to center position");
+
+  // メモリ解放
+  delete[] allPositions;
+  delete[] allSpeeds;
+  delete[] allACCs;
+  return ok;
+}
+
+// [e]/[d]コマンドと同じく一斉制御リストのトルクをON/OFF
+bool apiTorque(bool on)
+{
+  Serial.print(on ? "Enabling" : "Disabling");
+  Serial.print(" torque for ");
+  Serial.print(syncServoCount);
+  Serial.print(" servos (IDs: ");
+  printSyncServoIDs();
+  Serial.println(")...");
+
+  u8 successCount = 0;
+
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    u8 id = syncServoIDs[i];
+    if (EnableTorque(id, on ? 1 : 0))
+    {
+      Serial.print("ID ");
+      Serial.print(id);
+      Serial.println(on ? ": Torque enabled" : ": Torque disabled");
+      successCount++;
+    }
+    else
+    {
+      Serial.print("ID ");
+      Serial.print(id);
+      Serial.println(on ? ": Failed to enable torque" : ": Failed to disable torque");
+    }
+    delay(50); // 各サーボ間で少し待機
+  }
+
+  Serial.print(on ? "Torque enabled for " : "Torque disabled for ");
+  Serial.print(successCount);
+  Serial.print("/");
+  Serial.print(syncServoCount);
+  Serial.println(" servos");
+  return successCount == syncServoCount;
+}
+
+// [t]コマンドと同じ送信テスト
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
+}
+
+// [r]コマンドと同じく現在位置を読み取り、角度(度)で返す
+bool apiReadPosition(int id, float *deg)
+{
+  if (id < 1 || id > 253)
+  {
+    Serial.println("Error: ID out of range (1-253)");
+    return false;
+  }
+
+  Serial.print("Reading position from servo ID ");
+  Serial.println(id);
+
+  // 読み取りコマンド構築
+  u8 command[8] = {0xFF, 0xFF, (u8)id, 4, CMD_READ, REG_CURRENT_POSITION, 2, 0};
+  command[7] = calcChecksum(command, 8);
+
+  // コマンド送信
+  sendCommand(command, 8);
+
+  // 応答受信（8バイト期待）
+  bool ok = false;
+  u8 response[8];
+  if (receiveResponse(response, 8, 100))
+  {
+    // 応答検証
+    if (response[0] == 0xFF && response[1] == 0xFF && response[2] == id)
+    {
+      u16 position = decodeU16(&response[5], servoType);
+      float angle = positionToAngle(position);
+
+      Serial.print("Position: ");
+      Serial.print(position);
+      Serial.print(" (");
+      Serial.print(angle, 1);
+      Serial.println("°)");
+
+      *deg = angle;
+      ok = true;
+    }
+    else
+    {
+      Serial.println("Invalid response received");
+    }
+  }
+  else
+  {
+    Serial.println("No response from servo");
+  }
+
+  // 送信専用モードに確実に復帰
+  busDirTx();
+  return ok;
+}
+
+// [i]コマンドと同じ手順でIDを変更（ブラウザ用）。成功するとターゲットIDも新IDになる
+bool apiSetId(int oldId, int newId)
+{
+  // ID範囲チェック
+  if (oldId < 1 || oldId > 253 || newId < 1 || newId > 253)
+  {
+    Serial.println("Error: ID out of range (1-253)");
+    return false;
+  }
+
+  // 変更元サーボの存在確認
+  if (!pingServo((u8)oldId))
+  {
+    Serial.print("Error: No response from servo ID ");
+    Serial.println(oldId);
+    return false;
+  }
+
+  if (newId == oldId)
+  {
+    Serial.println("New ID is the same as current ID. Nothing to do.");
+    return true;
+  }
+
+  // ID重複チェック
+  if (pingServo((u8)newId))
+  {
+    Serial.print("Error: ID ");
+    Serial.print(newId);
+    Serial.println(" is already in use");
+    return false;
+  }
+
+  Serial.print("Changing servo ID ");
+  Serial.print(oldId);
+  Serial.print(" -> ");
+  Serial.println(newId);
+
+  // EEPROMロック解除 -> ID書き込み（旧IDで送信）
+  writeByteRegister((u8)oldId, regLock(), 0);
+  delay(10);
+  writeByteRegister((u8)oldId, REG_ID, (u8)newId);
+  delay(50);
+
+  // EEPROMロック（書き込み直後に新IDへ切り替わるため新IDで送信）
+  writeByteRegister((u8)newId, regLock(), 1);
+  delay(50);
+
+  // 新IDで応答確認
+  if (pingServo((u8)newId))
+  {
+    targetServoID = newId;
+    Serial.print("Servo ID changed successfully [OK]. Target ID is now ");
+    Serial.println(targetServoID);
+    return true;
+  }
+
+  Serial.println("Verification failed: No response at new ID");
+  Serial.println("Hint: Use [f] to scan servos");
+  return false;
+}
+
+// [b]コマンドと同じく通信速度を変更（servoToo: ターゲットサーボ(EEPROM) + ESP32, false: ESP32だけ）
+bool apiSetBaud(int index, bool servoToo)
+{
+  // 範囲チェック
+  if (index < 0 || index >= (int)STS_BAUD_COUNT)
+  {
+    Serial.println("Error: Baud rate number out of range");
+    return false;
+  }
+
+  if (!servoToo)
+  {
+    setHostBaudRate(index);
+    Serial.print("ESP32 baud rate changed to: ");
+    Serial.print(STS_BAUD_RATES[servoBaudIndex]);
+    Serial.println(" bps");
+    return true;
+  }
+
+  Serial.print("Writing baud rate ");
+  Serial.print(STS_BAUD_RATES[index]);
+  Serial.print(" bps to servo ID ");
+  Serial.println(targetServoID);
+
+  // EEPROMロック解除 -> ボーレート書き込み（現在の速度で送信）
+  writeByteRegister(targetServoID, regLock(), 0);
+  delay(10);
+  writeByteRegister(targetServoID, REG_BAUD_RATE, (u8)index);
+  delay(50);
+
+  // サーボは書き込み直後に新速度へ切り替わるため、ESP32側も追従
+  setHostBaudRate(index);
+
+  // EEPROMロック（新しい速度で送信）
+  writeByteRegister(targetServoID, regLock(), 1);
+  delay(50);
+
+  // 新しい速度で読み返して確認
+  Serial.println("Verifying at new baud rate...");
+  u8 command[8] = {0xFF, 0xFF, targetServoID, 4, CMD_READ, REG_BAUD_RATE, 1, 0};
+  command[7] = calcChecksum(command, 8);
+  sendCommand(command, 8);
+
+  bool ok = false;
+  u8 response[7];
+  if (receiveResponse(response, 7, 100) &&
+      response[0] == 0xFF && response[1] == 0xFF && response[2] == targetServoID)
+  {
+    Serial.print("Verification: Baud rate register = ");
+    Serial.print(response[5]);
+    ok = (response[5] == index);
+    if (ok)
+    {
+      Serial.println(" [OK]");
+    }
+    else
+    {
+      Serial.println(" [MISMATCH]");
+    }
+  }
+  else
+  {
+    Serial.println("Verification failed: No response at new baud rate");
+    Serial.println("Hint: Use [b] -> [1] to try other ESP32 baud rates");
+  }
+
+  Serial.print("ESP32 baud rate: ");
+  Serial.print(STS_BAUD_RATES[servoBaudIndex]);
+  Serial.println(" bps");
+
+  // 送信専用モードに確実に復帰
+  busDirTx();
+  return ok;
 }
 
 } // namespace feetech

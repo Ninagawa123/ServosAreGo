@@ -1,11 +1,13 @@
 #include <Arduino.h>
 #include "servo_select.h"
 
+extern bool busDirectWiring; // true: ② 半二重回路なし（main.cpp）
+
 namespace pwm
 {
 
 // PWMサーボ（50Hz）: 信号線にパルスを出すだけで、サーボからの返信はない
-// 半二重回路のENを送信方向に固定し、TXピンからLEDCでパルスを出す
+// 半二重回路のENを送信方向に固定し、TXピンからLEDCでパルスを出す（② 半二重回路なしではENは使わない）
 
 typedef unsigned char u8;
 typedef unsigned short u16;
@@ -59,8 +61,11 @@ float pulseToAngle(u16 pulseUs)
 // パルス出力の開始（ENを送信方向にしてTXピンにLEDCをつなぐ）
 void beginPwm()
 {
-  pinMode(PIN_EN, OUTPUT);
-  digitalWrite(PIN_EN, HIGH);
+  if (!busDirectWiring)
+  {
+    pinMode(PIN_EN, OUTPUT);
+    digitalWrite(PIN_EN, HIGH);
+  }
   ledcSetup(PWM_CHANNEL, PWM_FREQUENCY, PWM_RESOLUTION);
   ledcAttachPin(TX1, PWM_CHANNEL);
   ledcWrite(PWM_CHANNEL, 0); // パルスなし（線はLOW）
@@ -96,6 +101,69 @@ void printPulse(u16 pulseUs)
   Serial.print(" deg)");
 }
 
+// ===== ブラウザ用API =====
+// PWMはIDも返信もないため、動かす操作だけに対応する
+
+void apiGetInfo(ApiInfo *info)
+{
+  info->idMin = -1;
+  info->idMax = -1;
+  info->angleMin = pulseToAngle(PULSE_MIN);
+  info->angleMax = pulseToAngle(PULSE_MAX);
+  info->bauds = NULL;
+  info->baudCount = 0;
+  info->baudIndex = -1;
+  info->baud = 0;
+  info->target = -1;
+  info->syncIds = NULL;
+  info->syncCount = 0;
+  info->oneServoForId = false;
+}
+
+int apiScan(int maxId, ApiServo *found, int maxCount) { return -1; }
+bool apiSetTarget(int id) { return false; }
+bool apiSetSync(const uint8_t *ids, uint8_t count) { return false; }
+bool apiReadPosition(int id, float *deg) { return false; }
+bool apiSetId(int oldId, int newId) { return false; }
+bool apiSetBaud(int index, bool servoToo) { return false; }
+
+// 角度指令（範囲外ならfalse）
+bool apiMove(float deg)
+{
+  if (deg < pulseToAngle(PULSE_MIN) || deg > pulseToAngle(PULSE_MAX))
+    return false;
+  setPulse(angleToPulse(deg));
+  Serial.print("Pulse: ");
+  printPulse(currentPulse);
+  Serial.println();
+  return true;
+}
+
+bool apiCenter()
+{
+  return apiMove(0.0);
+}
+
+// ON: 最後のパルス幅で出す, OFF: パルスを止める
+bool apiTorque(bool on)
+{
+  if (on)
+  {
+    setPulse(currentPulse);
+    Serial.print("Pulse ON: ");
+    printPulse(currentPulse);
+    Serial.println();
+  }
+  else
+  {
+    stopPulse();
+    Serial.println("Pulse OFF (most servos release when no pulse is received)");
+  }
+  return true;
+}
+
+bool apiTxTest();
+
 // [x]コマンド: 角度指令
 void executeAngleCommand()
 {
@@ -106,17 +174,8 @@ void executeAngleCommand()
   Serial.println(" degrees): ");
 
   String input = readInput();
-  float angle = input.toFloat();
-  if (input.length() == 0 || angle < pulseToAngle(PULSE_MIN) || angle > pulseToAngle(PULSE_MAX))
-  {
+  if (input.length() == 0 || !apiMove(input.toFloat()))
     Serial.println("Error: Angle out of range");
-    return;
-  }
-
-  setPulse(angleToPulse(angle));
-  Serial.print("Pulse: ");
-  printPulse(currentPulse);
-  Serial.println();
 }
 
 // [w]コマンド: パルス幅を直接指定
@@ -145,26 +204,19 @@ void executeSetPulseCommand()
 // [c]コマンド: 中央へ
 void executeCenterCommand()
 {
-  setPulse(PULSE_CENTER);
-  Serial.print("Pulse: ");
-  printPulse(currentPulse);
-  Serial.println();
+  apiCenter();
 }
 
 // [e]コマンド: パルス出力ON（最後のパルス幅で保持）
 void executePulseOnCommand()
 {
-  setPulse(currentPulse);
-  Serial.print("Pulse ON: ");
-  printPulse(currentPulse);
-  Serial.println();
+  apiTorque(true);
 }
 
 // [d]コマンド: パルス出力OFF（脱力）
 void executePulseOffCommand()
 {
-  stopPulse();
-  Serial.println("Pulse OFF (most servos release when no pulse is received)");
+  apiTorque(false);
 }
 
 // [t]コマンド: 送信テスト（+30, -30, +30, -30, 中央）
@@ -184,6 +236,12 @@ void executeTxTestCommand()
 
   Serial.println("TX test finished (pulse stays ON at center. Use [d] to release).");
   Serial.println("Not moved -> check power and wiring. Serial-mode servos ignore PWM.");
+}
+
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
 }
 
 void disp_menu()
@@ -228,7 +286,7 @@ void loop()
 {
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "x")
@@ -243,6 +301,8 @@ void loop()
       executePulseOffCommand();
     else if (command == "w")
       executeSetPulseCommand();
+    else if (command.startsWith("@"))
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
     else if (command == "h")
       selectServoTypeAndRestart();
     else if (command.length() == 0)
@@ -271,13 +331,15 @@ bool detectByMotion()
   Serial.print(DETECT_TIMEOUT / 1000);
   Serial.println(" s).");
 
+  Serial.println("@{\"ev\":\"pwmsweep\"}"); // ブラウザ用: 動いたかの確認を出す
+
   bool moved = false;
   unsigned long startTime = millis();
   while (millis() - startTime < DETECT_TIMEOUT)
   {
     if (Serial.available())
     {
-      String input = Serial.readString();
+      String input = Serial.readStringUntil('\n');
       input.trim();
       moved = (input.length() == 0);
       break;

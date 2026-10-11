@@ -810,6 +810,22 @@ void scanAllBaudRates(int maxId)
   applyScanResult(maxId, bestIds, bestModels, bestCount);
 }
 
+// 現在の通信速度で検索し、見つかればターゲットIDと一斉制御リストを自動設定。見つかった数を返す
+u8 scanAndApply(int maxId, u8 *foundServos, u16 *foundModels)
+{
+  Serial.print("Scanning servos from ID0 to ID");
+  Serial.print(maxId);
+  Serial.print(" at ");
+  Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
+  Serial.println(" bps...");
+  Serial.println();
+
+  u8 foundCount = scanServos(maxId, foundServos, foundModels, true);
+  if (foundCount > 0)
+    applyScanResult(maxId, foundServos, foundModels, foundCount);
+  return foundCount;
+}
+
 // [f]コマンド: サーボ認識（見つからなければ全ボーレート検索を提案）
 void executeServoDetectionCommand()
 {
@@ -832,19 +848,8 @@ void executeServoDetectionCommand()
     return;
   }
 
-  Serial.print("Scanning servos from ID0 to ID");
-  Serial.print(maxId);
-  Serial.print(" at ");
-  Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
-  Serial.println(" bps...");
-  Serial.println();
-
-  u8 foundCount = scanServos(maxId, foundServos, foundModels, true);
-  if (foundCount > 0)
-  {
-    applyScanResult(maxId, foundServos, foundModels, foundCount);
+  if (scanAndApply(maxId, foundServos, foundModels) > 0)
     return;
-  }
 
   Serial.println();
   Serial.print("No servos detected at ");
@@ -871,18 +876,12 @@ void executeChangeTargetIdCommand()
   Serial.println("Enter new target ID (0-252): ");
 
   String input = readInput();
-  int newId = input.toInt();
 
-  // ID範囲チェック
-  if (input.length() == 0 || !isDigit(input[0]) || newId < 0 || newId > DXL_ID_MAX)
+  // 数字でなければエラー（範囲チェックと変更は apiSetTarget）
+  if (input.length() == 0 || !isDigit(input[0]) || !apiSetTarget(input.toInt()))
   {
     Serial.println("Error: ID out of range (0-252)");
-    return;
   }
-
-  targetServoID = newId;
-  Serial.print("Target ID changed to: ");
-  Serial.println(targetServoID);
 }
 
 // [n]コマンド: 一斉制御サーボIDリスト設定
@@ -897,42 +896,17 @@ void executeSetSyncServoIDsCommand()
 
   u8 newIDs[MAX_SYNC_SERVOS];
   int newCount = parseIdList(input, newIDs);
-  if (newCount < 0)
+  if (newCount < 0 || !apiSetSync(newIDs, newCount))
   {
     Serial.println("Error: Invalid ID list (valid IDs: 0-252)");
-    return;
   }
-
-  memcpy(syncServoIDs, newIDs, newCount);
-  syncServoCount = newCount;
-  Serial.print("Sync servo IDs changed to: ");
-  printSyncServoIDs();
-  Serial.print(" (");
-  Serial.print(syncServoCount);
-  Serial.println(" servos)");
 }
 
 // [r]コマンド: サーボ位置読み取り
 void executeReadPositionCommand()
 {
-  Serial.print("Reading position from servo ID ");
-  Serial.println(targetServoID);
-
-  u32 value;
-  DxlResult result = dxlReadValue(targetServoID, ADDR_PRESENT_POSITION, 4, &value);
-  if (result != DXL_OK)
-  {
-    Serial.print("Error: ");
-    Serial.println(dxlResultText(result));
-    return;
-  }
-
-  s32 position = (s32)value;
-  Serial.print("Position: ");
-  Serial.print(position);
-  Serial.print(" (");
-  Serial.print(positionToAngle(position), 1);
-  Serial.println("°)");
+  float angle;
+  apiReadPosition(targetServoID, &angle);
 }
 
 // [v]コマンド: サーボ電圧読み取り（電圧リミットと比較）
@@ -1025,12 +999,7 @@ void executeReadAllPositionsCommand()
 // [c]コマンド: 全サーボ位置を中央にリセット
 void executeResetAllPositionsCommand()
 {
-  Serial.print("Resetting ");
-  Serial.print(syncServoCount);
-  Serial.println(" servos to position 0 (center)...");
-
-  if (moveSyncServos(POSITION_CENTER, CENTER_PROFILE_VELOCITY))
-    Serial.println("All servos reset to center position");
+  apiCenter();
 }
 
 // [x]コマンド: 全サーボに角度を一斉送信
@@ -1039,27 +1008,19 @@ void executeAngleCommand()
   Serial.println("Enter angle (-180 to 180 degrees): ");
 
   String input = readInput();
-  float angle = input.toFloat();
 
-  // 角度範囲チェック
-  if (input.length() == 0 || angle < -180.0 || angle > 180.0)
+  // 空欄はエラー（範囲チェックと送信は apiMove）
+  if (input.length() == 0)
   {
     Serial.println("Error: Angle out of range (-180 to 180)");
     return;
   }
 
-  s32 position = angleToPosition(angle);
-  Serial.print("Converting ");
-  Serial.print(angle);
-  Serial.print(" degrees to position ");
-  Serial.println(position);
-
-  if (moveSyncServos(position, MOVE_PROFILE_VELOCITY))
-    Serial.println("Angle command sent successfully");
+  apiMove(input.toFloat());
 }
 
-// [e]/[d]コマンド共通: 全サーボのトルク切替（各サーボの応答で成否確認）
-void setTorqueAll(u8 enable)
+// [e]/[d]コマンド共通: 全サーボのトルク切替（各サーボの応答で成否確認）。全台成功ならtrue
+bool setTorqueAll(u8 enable)
 {
   Serial.print(enable ? "Enabling" : "Disabling");
   Serial.print(" torque for ");
@@ -1095,6 +1056,8 @@ void setTorqueAll(u8 enable)
   Serial.print("/");
   Serial.print(syncServoCount);
   Serial.println(" servos");
+
+  return successCount == syncServoCount;
 }
 
 // [p]コマンド: 指定アドレスのレジスタ値読み取り
@@ -1279,67 +1242,11 @@ void executeSetBaudRateCommand()
 
   String modeInput = readInput();
 
-  if (modeInput == "1")
-  {
-    setHostBaudRate(baudIndex);
-    Serial.print("ESP32 baud rate changed to: ");
-    Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
-    Serial.println(" bps");
-    return;
-  }
-  else if (modeInput != "2")
-  {
-    Serial.println("Error: Invalid selection");
-    return;
-  }
-
-  // EEPROM書き込みのためトルクOFF
-  DxlResult result = dxlWriteValue(targetServoID, ADDR_TORQUE_ENABLE, 1, 0);
-  if (result != DXL_OK)
-  {
-    Serial.print("Error: Failed to disable torque (");
-    Serial.print(dxlResultText(result));
-    Serial.println(")");
-    return;
-  }
-
-  Serial.print("Writing baud rate ");
-  Serial.print(DXL_BAUD_RATES[baudIndex]);
-  Serial.print(" bps to servo ID ");
-  Serial.println(targetServoID);
-
-  // ボーレート書き込み（応答は旧速度で返る想定。応答なしでも続行）
-  result = dxlWriteValue(targetServoID, ADDR_BAUD_RATE, 1, baudIndex);
-  if (result == DXL_STATUS_ERROR)
-  {
-    Serial.print("Error: ");
-    Serial.println(dxlResultText(result));
-    return;
-  }
-  delay(50);
-
-  // ESP32側も新速度へ追従
-  setHostBaudRate(baudIndex);
-
-  // 新しい速度で読み返して確認
-  Serial.println("Verifying at new baud rate...");
-  u32 readValue;
-  result = dxlReadValue(targetServoID, ADDR_BAUD_RATE, 1, &readValue);
-  if (result == DXL_OK)
-  {
-    Serial.print("Verification: Baud rate register = ");
-    Serial.print(readValue);
-    Serial.println(readValue == (u32)baudIndex ? " [OK]" : " [MISMATCH]");
-  }
+  // [1] ESP32だけ / [2] サーボ + ESP32（処理は apiSetBaud）
+  if (modeInput == "1" || modeInput == "2")
+    apiSetBaud(baudIndex, modeInput == "2");
   else
-  {
-    Serial.println("Verification failed: No response at new baud rate");
-    Serial.println("Hint: Use [b] -> [1] to try other ESP32 baud rates");
-  }
-
-  Serial.print("ESP32 baud rate: ");
-  Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
-  Serial.println(" bps");
+    Serial.println("Error: Invalid selection");
 }
 
 // [i]コマンド: サーボID変更
@@ -1358,88 +1265,15 @@ void executeChangeServoIdCommand()
   Serial.println("Enter new servo ID (0-252): ");
 
   String input = readInput();
-  int newId = input.toInt();
 
-  // ID範囲チェック
-  if (input.length() == 0 || !isDigit(input[0]) || newId < 0 || newId > DXL_ID_MAX)
+  // 数字でなければエラー（範囲チェックと変更は apiSetId）
+  if (input.length() == 0 || !isDigit(input[0]))
   {
     Serial.println("Error: ID out of range (0-252)");
     return;
   }
 
-  if (newId == targetServoID)
-  {
-    Serial.println("New ID is the same as current ID. Nothing to do.");
-    return;
-  }
-
-  // ID重複チェック
-  if (dxlPing(newId, NULL, NULL, SCAN_TIMEOUT) != DXL_NO_RESPONSE)
-  {
-    Serial.print("Error: ID ");
-    Serial.print(newId);
-    Serial.println(" is already in use");
-    return;
-  }
-
-  Serial.print("Changing servo ID ");
-  Serial.print(targetServoID);
-  Serial.print(" -> ");
-  Serial.println(newId);
-
-  // EEPROM書き込みのためトルクOFF
-  DxlResult result = dxlWriteValue(targetServoID, ADDR_TORQUE_ENABLE, 1, 0);
-  if (result != DXL_OK)
-  {
-    Serial.print("Error: Failed to disable torque (");
-    Serial.print(dxlResultText(result));
-    Serial.println(")");
-    return;
-  }
-
-  // ID書き込み（応答IDが新旧どちらでも新IDのPINGで最終確認する）
-  result = dxlWriteValue(targetServoID, ADDR_ID, 1, newId);
-  if (result == DXL_STATUS_ERROR)
-  {
-    Serial.print("Error: ");
-    Serial.println(dxlResultText(result));
-    return;
-  }
-  delay(50);
-
-  // 新IDで応答確認
-  if (dxlPing(newId, NULL, NULL, RESPONSE_TIMEOUT) != DXL_OK)
-  {
-    Serial.println("Verification failed: No response at new ID");
-    Serial.println("Hint: Use [f] to scan servos");
-    return;
-  }
-
-  // 一斉制御リスト内の旧IDも新IDに置き換え（昇順を維持）
-  for (u8 i = 0; i < syncServoCount; i++)
-  {
-    if (syncServoIDs[i] == targetServoID)
-    {
-      syncServoIDs[i] = newId;
-      for (u8 j = i; j > 0 && syncServoIDs[j - 1] > syncServoIDs[j]; j--)
-      {
-        u8 tmp = syncServoIDs[j - 1];
-        syncServoIDs[j - 1] = syncServoIDs[j];
-        syncServoIDs[j] = tmp;
-      }
-      for (u8 j = i; j + 1 < syncServoCount && syncServoIDs[j] > syncServoIDs[j + 1]; j++)
-      {
-        u8 tmp = syncServoIDs[j + 1];
-        syncServoIDs[j + 1] = syncServoIDs[j];
-        syncServoIDs[j] = tmp;
-      }
-      break;
-    }
-  }
-
-  targetServoID = newId;
-  Serial.print("Servo ID changed successfully [OK]. Target ID is now ");
-  Serial.println(targetServoID);
+  apiSetId(targetServoID, input.toInt());
 }
 
 // [m]コマンド: サーボのバージョン情報（型番/ファームウェア）読み取り
@@ -1577,7 +1411,7 @@ void loop()
   // シリアル入力チェック
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "x")
@@ -1644,6 +1478,10 @@ void loop()
     {
       executeTxTestCommand();
     }
+    else if (command.startsWith("@"))
+    {
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
+    }
     else if (command == "h")
     {
       selectServoTypeAndRestart();
@@ -1697,6 +1535,337 @@ void presetBaud(unsigned long baud)
     if (DXL_BAUD_RATES[i] == baud)
       servoBaudIndex = i;
   }
+}
+
+// ===== ブラウザ用API =====
+
+// 今の状態と、この種類でできること
+void apiGetInfo(ApiInfo *info)
+{
+  info->idMin = 0;
+  info->idMax = DXL_ID_MAX;
+  info->angleMin = -180.0;
+  info->angleMax = 180.0;
+  info->bauds = DXL_BAUD_RATES;
+  info->baudCount = DXL_BAUD_COUNT;
+  info->baudIndex = servoBaudIndex;
+  info->baud = DXL_BAUD_RATES[servoBaudIndex];
+  info->target = targetServoID;
+  info->syncIds = syncServoIDs;
+  info->syncCount = syncServoCount;
+  info->oneServoForId = false;
+}
+
+// [f]と同じ検索（現在の通信速度のみ、全ボーレート検索はしない）。見つかった数を返す
+int apiScan(int maxId, ApiServo *found, int maxCount)
+{
+  static u8 foundServos[DXL_ID_MAX + 1];
+  static u16 foundModels[DXL_ID_MAX + 1];
+
+  if (maxId < 0 || maxId > DXL_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-252)");
+    return -1;
+  }
+
+  u8 foundCount = scanAndApply(maxId, foundServos, foundModels);
+  if (foundCount == 0)
+  {
+    Serial.print("No servos detected at ");
+    Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
+    Serial.println(" bps");
+  }
+
+  int count = 0;
+  for (u8 i = 0; i < foundCount && count < maxCount; i++)
+  {
+    found[count].id = foundServos[i];
+    strncpy(found[count].model, modelName(foundModels[i]), API_MODEL_LEN - 1);
+    found[count].model[API_MODEL_LEN - 1] = '\0';
+    count++;
+  }
+  return count;
+}
+
+// [z]と同じ: ターゲットID変更（範囲外はfalse）
+bool apiSetTarget(int id)
+{
+  if (id < 0 || id > DXL_ID_MAX)
+    return false;
+
+  targetServoID = id;
+  Serial.print("Target ID changed to: ");
+  Serial.println(targetServoID);
+  return true;
+}
+
+// [n]と同じ: 一斉制御リスト設定（昇順・重複なしに整える。範囲外のIDや空リストはfalse）
+bool apiSetSync(const uint8_t *ids, uint8_t count)
+{
+  bool selected[DXL_ID_MAX + 1] = {false};
+  for (u8 i = 0; i < count; i++)
+  {
+    if (ids[i] > DXL_ID_MAX)
+      return false;
+    selected[ids[i]] = true;
+  }
+
+  u8 newCount = 0;
+  for (int id = 0; id <= DXL_ID_MAX; id++)
+  {
+    if (selected[id])
+      syncServoIDs[newCount++] = id;
+  }
+  if (newCount == 0)
+    return false;
+  syncServoCount = newCount;
+
+  Serial.print("Sync servo IDs changed to: ");
+  printSyncServoIDs();
+  Serial.print(" (");
+  Serial.print(syncServoCount);
+  Serial.println(" servos)");
+  return true;
+}
+
+// [x]と同じ: 一斉制御リストの全サーボを角度へ（トルクONも行う）
+bool apiMove(float deg)
+{
+  // 角度範囲チェック
+  if (!(deg >= -180.0 && deg <= 180.0))
+  {
+    Serial.println("Error: Angle out of range (-180 to 180)");
+    return false;
+  }
+
+  s32 position = angleToPosition(deg);
+  Serial.print("Converting ");
+  Serial.print(deg);
+  Serial.print(" degrees to position ");
+  Serial.println(position);
+
+  if (!moveSyncServos(position, MOVE_PROFILE_VELOCITY))
+    return false;
+  Serial.println("Angle command sent successfully");
+  return true;
+}
+
+// [c]と同じ: 一斉制御リストの全サーボを中央へ
+bool apiCenter()
+{
+  Serial.print("Resetting ");
+  Serial.print(syncServoCount);
+  Serial.println(" servos to position 0 (center)...");
+
+  if (!moveSyncServos(POSITION_CENTER, CENTER_PROFILE_VELOCITY))
+    return false;
+  Serial.println("All servos reset to center position");
+  return true;
+}
+
+// [e]/[d]と同じ: 全サーボのトルク切替（全台成功ならtrue）
+bool apiTorque(bool on)
+{
+  return setTorqueAll(on ? 1 : 0);
+}
+
+// [t]と同じ: 送信テスト（応答を見ないので常にtrue）
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
+}
+
+// [r]と同じ: 現在位置を読み取り、角度(度)で返す
+bool apiReadPosition(int id, float *deg)
+{
+  if (id < 0 || id > DXL_ID_MAX)
+    return false;
+
+  Serial.print("Reading position from servo ID ");
+  Serial.println(id);
+
+  u32 value;
+  DxlResult result = dxlReadValue(id, ADDR_PRESENT_POSITION, 4, &value);
+  if (result != DXL_OK)
+  {
+    Serial.print("Error: ");
+    Serial.println(dxlResultText(result));
+    return false;
+  }
+
+  s32 position = (s32)value;
+  *deg = positionToAngle(position);
+  Serial.print("Position: ");
+  Serial.print(position);
+  Serial.print(" (");
+  Serial.print(*deg, 1);
+  Serial.println("°)");
+  return true;
+}
+
+// [i]と同じ: サーボID変更（トルクOFF → 書き込み → 新IDで応答確認）。成功するとターゲットIDも新IDになる
+bool apiSetId(int oldId, int newId)
+{
+  // ID範囲チェック
+  if (oldId < 0 || oldId > DXL_ID_MAX || newId < 0 || newId > DXL_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-252)");
+    return false;
+  }
+
+  // 変更元サーボの存在確認
+  if (dxlPing(oldId, NULL, NULL, RESPONSE_TIMEOUT) != DXL_OK)
+  {
+    Serial.println("Error: No response from target servo (use [z] to select ID)");
+    return false;
+  }
+
+  if (newId == oldId)
+  {
+    Serial.println("New ID is the same as current ID. Nothing to do.");
+    return true;
+  }
+
+  // ID重複チェック
+  if (dxlPing(newId, NULL, NULL, SCAN_TIMEOUT) != DXL_NO_RESPONSE)
+  {
+    Serial.print("Error: ID ");
+    Serial.print(newId);
+    Serial.println(" is already in use");
+    return false;
+  }
+
+  Serial.print("Changing servo ID ");
+  Serial.print(oldId);
+  Serial.print(" -> ");
+  Serial.println(newId);
+
+  // EEPROM書き込みのためトルクOFF
+  DxlResult result = dxlWriteValue(oldId, ADDR_TORQUE_ENABLE, 1, 0);
+  if (result != DXL_OK)
+  {
+    Serial.print("Error: Failed to disable torque (");
+    Serial.print(dxlResultText(result));
+    Serial.println(")");
+    return false;
+  }
+
+  // ID書き込み（応答IDが新旧どちらでも新IDのPINGで最終確認する）
+  result = dxlWriteValue(oldId, ADDR_ID, 1, newId);
+  if (result == DXL_STATUS_ERROR)
+  {
+    Serial.print("Error: ");
+    Serial.println(dxlResultText(result));
+    return false;
+  }
+  delay(50);
+
+  // 新IDで応答確認
+  if (dxlPing(newId, NULL, NULL, RESPONSE_TIMEOUT) != DXL_OK)
+  {
+    Serial.println("Verification failed: No response at new ID");
+    Serial.println("Hint: Use [f] to scan servos");
+    return false;
+  }
+
+  // 一斉制御リスト内の旧IDも新IDに置き換え（昇順を維持）
+  for (u8 i = 0; i < syncServoCount; i++)
+  {
+    if (syncServoIDs[i] == oldId)
+    {
+      syncServoIDs[i] = newId;
+      for (u8 j = i; j > 0 && syncServoIDs[j - 1] > syncServoIDs[j]; j--)
+      {
+        u8 tmp = syncServoIDs[j - 1];
+        syncServoIDs[j - 1] = syncServoIDs[j];
+        syncServoIDs[j] = tmp;
+      }
+      for (u8 j = i; j + 1 < syncServoCount && syncServoIDs[j] > syncServoIDs[j + 1]; j++)
+      {
+        u8 tmp = syncServoIDs[j + 1];
+        syncServoIDs[j + 1] = syncServoIDs[j];
+        syncServoIDs[j] = tmp;
+      }
+      break;
+    }
+  }
+
+  targetServoID = newId;
+  Serial.print("Servo ID changed successfully [OK]. Target ID is now ");
+  Serial.println(targetServoID);
+  return true;
+}
+
+// [b]と同じ: 通信速度変更（servoToo: ターゲットサーボ(EEPROM) + ESP32, false: ESP32だけ）
+bool apiSetBaud(int index, bool servoToo)
+{
+  // 範囲チェック
+  if (index < 0 || index >= (int)DXL_BAUD_COUNT)
+  {
+    Serial.println("Error: Baud rate number out of range");
+    return false;
+  }
+
+  if (!servoToo)
+  {
+    setHostBaudRate(index);
+    Serial.print("ESP32 baud rate changed to: ");
+    Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
+    Serial.println(" bps");
+    return true;
+  }
+
+  // EEPROM書き込みのためトルクOFF
+  DxlResult result = dxlWriteValue(targetServoID, ADDR_TORQUE_ENABLE, 1, 0);
+  if (result != DXL_OK)
+  {
+    Serial.print("Error: Failed to disable torque (");
+    Serial.print(dxlResultText(result));
+    Serial.println(")");
+    return false;
+  }
+
+  Serial.print("Writing baud rate ");
+  Serial.print(DXL_BAUD_RATES[index]);
+  Serial.print(" bps to servo ID ");
+  Serial.println(targetServoID);
+
+  // ボーレート書き込み（応答は旧速度で返る想定。応答なしでも続行）
+  result = dxlWriteValue(targetServoID, ADDR_BAUD_RATE, 1, index);
+  if (result == DXL_STATUS_ERROR)
+  {
+    Serial.print("Error: ");
+    Serial.println(dxlResultText(result));
+    return false;
+  }
+  delay(50);
+
+  // ESP32側も新速度へ追従
+  setHostBaudRate(index);
+
+  // 新しい速度で読み返して確認
+  Serial.println("Verifying at new baud rate...");
+  bool verified = false;
+  u32 readValue;
+  result = dxlReadValue(targetServoID, ADDR_BAUD_RATE, 1, &readValue);
+  if (result == DXL_OK)
+  {
+    verified = (readValue == (u32)index);
+    Serial.print("Verification: Baud rate register = ");
+    Serial.print(readValue);
+    Serial.println(verified ? " [OK]" : " [MISMATCH]");
+  }
+  else
+  {
+    Serial.println("Verification failed: No response at new baud rate");
+    Serial.println("Hint: Use [b] -> [1] to try other ESP32 baud rates");
+  }
+
+  Serial.print("ESP32 baud rate: ");
+  Serial.print(DXL_BAUD_RATES[servoBaudIndex]);
+  Serial.println(" bps");
+  return verified;
 }
 
 } // namespace dynamixel
