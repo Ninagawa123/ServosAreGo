@@ -1,0 +1,895 @@
+<!doctype html>
+<html lang="ja">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>ServosAreGo</title>
+<style>
+:root {
+  --bg: #f4f6fa; --panel: #ffffff; --text: #18202c; --muted: #5d6878; --line: #dde3ec;
+  --accent: #1f6feb; --accent-text: #ffffff; --ok: #1a7f37; --warn: #9a6700; --err: #cf222e;
+  --term-bg: #0f1520; --term-text: #d6e2f0; --term-dim: #6f7f95; --chip: #eef2f8;
+}
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --bg: #0d1117; --panel: #161b22; --text: #e6edf3; --muted: #8d96a0; --line: #2a313c;
+    --accent: #3b82f6; --accent-text: #ffffff; --ok: #3fb950; --warn: #d29922; --err: #f85149;
+    --term-bg: #05080d; --term-text: #d6e2f0; --term-dim: #6f7f95; --chip: #1f2630;
+  }
+}
+* { box-sizing: border-box; }
+body { margin: 0; background: var(--bg); color: var(--text); font: 14px/1.5 system-ui, -apple-system, "Segoe UI", "Hiragino Sans", "Noto Sans JP", sans-serif; }
+header { display: flex; align-items: center; gap: 16px; padding: 12px 16px; background: #0f2a5c; flex-wrap: wrap; }
+header img { height: 56px; }
+header .spacer { flex: 1; }
+header .ver { color: #aab4c2; font-size: 12px; }
+main { max-width: 1180px; margin: 0 auto; padding: 16px; display: grid; grid-template-columns: repeat(auto-fit, minmax(340px, 1fr)); gap: 16px; }
+section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; padding: 14px 16px; min-width: 0; }
+section.wide { grid-column: 1 / -1; }
+h2 { margin: 0 0 10px; font-size: 15px; display: flex; align-items: center; gap: 8px; }
+h2 .num { display: inline-grid; place-items: center; width: 22px; height: 22px; border-radius: 50%; background: var(--accent); color: var(--accent-text); font-size: 12px; }
+.row { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; margin: 8px 0; }
+.muted { color: var(--muted); font-size: 12px; }
+button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid var(--line); background: var(--chip); color: var(--text); cursor: pointer; }
+button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+button.danger { color: var(--err); }
+button:disabled { opacity: .45; cursor: not-allowed; }
+input, select { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); min-width: 0; }
+input[type=number] { width: 80px; }
+input[type=range] { flex: 1; min-width: 160px; }
+.status { display: inline-flex; align-items: center; gap: 6px; padding: 3px 10px; border-radius: 99px; background: var(--chip); font-size: 12px; }
+.dot { width: 9px; height: 9px; border-radius: 50%; background: var(--muted); }
+.dot.ok { background: var(--ok); } .dot.warn { background: var(--warn); } .dot.err { background: var(--err); }
+.msg { margin: 6px 0; padding: 8px 10px; border-radius: 6px; background: var(--chip); font-size: 13px; }
+.msg.err { color: var(--err); } .msg.ok { color: var(--ok); } .msg.warn { color: var(--warn); }
+table { width: 100%; border-collapse: collapse; font-size: 13px; }
+th, td { text-align: left; padding: 5px 6px; border-bottom: 1px solid var(--line); }
+progress { width: 100%; height: 14px; }
+.steps { list-style: none; padding: 0; margin: 6px 0; font-size: 12px; font-family: ui-monospace, Menlo, Consolas, monospace; }
+.steps li.found { color: var(--ok); font-weight: bold; }
+.steps li.miss { color: var(--muted); }
+#term { background: var(--term-bg); color: var(--term-text); font: 12px/1.45 ui-monospace, Menlo, Consolas, monospace; height: 280px; overflow: auto; padding: 8px 10px; border-radius: 6px; white-space: pre-wrap; word-break: break-all; }
+#term .api { color: var(--term-dim); } #term .tx { color: #7cc4ff; } #term .sys { color: #f2cc60; }
+.hidden { display: none !important; }
+dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--panel); color: var(--text); max-width: 420px; }
+dialog::backdrop { background: rgba(0,0,0,.45); }
+.kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
+.kv b { font-weight: 600; color: var(--muted); }
+details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
+@media (max-width: 480px) { main { padding: 12px; } header img { height: 40px; } }
+</style>
+</head>
+<body>
+<header>
+  <img src="data:image/png;base64,/*__LOGO_B64__*/" alt="ServosAreGo">
+  <span class="spacer"></span>
+  <span class="ver">Firmware <span id="embeddedVer">/*__FW_VERSION__*/</span></span>
+  <select id="lang" aria-label="Language"><option value="ja">日本語</option><option value="en">English</option></select>
+</header>
+
+<main>
+  <div id="unsupported" class="msg err wide hidden" style="grid-column:1/-1" data-i18n="unsupported"></div>
+
+  <!-- 1. 接続 -->
+  <section>
+    <h2><span class="num">1</span><span data-i18n="connTitle"></span></h2>
+    <div class="row">
+      <span class="status"><span id="connDot" class="dot"></span><span id="connText"></span></span>
+      <span id="portInfo" class="muted"></span>
+    </div>
+    <div class="row">
+      <button id="btnConnect" class="primary" data-i18n="connect"></button>
+      <button id="btnDisconnect" data-i18n="disconnect" disabled></button>
+    </div>
+    <p class="muted" data-i18n="connHint"></p>
+    <details><summary data-i18n="osHelpTitle"></summary><div class="muted" data-i18n-html="osHelp"></div></details>
+  </section>
+
+  <!-- 2. ファームウェア -->
+  <section>
+    <h2><span class="num">2</span><span data-i18n="fwTitle"></span></h2>
+    <div class="kv">
+      <b data-i18n="fwEmbedded"></b><span>/*__FW_VERSION__*/</span>
+      <b data-i18n="fwBoard"></b><span id="fwBoard">-</span>
+    </div>
+    <div id="fwMsg" class="msg hidden"></div>
+    <div class="row">
+      <button id="btnFlash" data-i18n="flash" disabled></button>
+    </div>
+    <progress id="flashProgress" class="hidden" max="100" value="0"></progress>
+    <p class="muted" data-i18n="flashHint"></p>
+  </section>
+
+  <!-- 3. サーボの種類 -->
+  <section>
+    <h2><span class="num">3</span><span data-i18n="typeTitle"></span></h2>
+    <div class="row">
+      <span data-i18n="wiring"></span>
+      <select id="wiringSelect" style="flex:1" disabled>
+        <option value="0" data-i18n="wiring0"></option>
+        <option value="1" data-i18n="wiring1"></option>
+      </select>
+    </div>
+    <p id="wiringNote" class="muted hidden" data-i18n="wiringNote"></p>
+    <div class="row">
+      <select id="kindSelect" style="flex:1"></select>
+      <button id="btnSelect" class="primary" data-i18n="apply" disabled></button>
+    </div>
+    <div class="row">
+      <button id="btnDetect" data-i18n="detect" disabled></button>
+      <span class="muted" data-i18n="detectHint"></span>
+    </div>
+    <div id="typeMsg" class="msg hidden"></div>
+    <ul id="detectSteps" class="steps hidden"></ul>
+  </section>
+
+  <!-- 4. 検索 -->
+  <section id="secScan">
+    <h2><span class="num">4</span><span data-i18n="scanTitle"></span></h2>
+    <div class="row">
+      <label><span data-i18n="maxId"></span> <input id="scanMax" type="number" min="0" value="20"></label>
+      <button id="btnScan" class="primary" data-i18n="scan" disabled></button>
+    </div>
+    <div id="scanMsg" class="msg hidden"></div>
+    <table id="scanTable" class="hidden">
+      <thead><tr><th>ID</th><th data-i18n="model"></th><th></th></tr></thead>
+      <tbody></tbody>
+    </table>
+    <div class="row">
+      <label><span data-i18n="target"></span> <input id="targetId" type="number" min="0"></label>
+      <button id="btnTarget" data-i18n="set" disabled></button>
+    </div>
+    <div class="row">
+      <label style="flex:1;display:flex;gap:6px;align-items:center"><span data-i18n="sync"></span> <input id="syncIds" style="flex:1" placeholder="1,2,3"></label>
+      <button id="btnSync" data-i18n="set" disabled></button>
+    </div>
+  </section>
+
+  <!-- 5. 動作 -->
+  <section>
+    <h2><span class="num">5</span><span data-i18n="moveTitle"></span></h2>
+    <p class="muted" data-i18n="moveHint"></p>
+    <div class="row">
+      <input id="angle" type="range" min="-90" max="90" step="1" value="0">
+      <input id="angleNum" type="number" step="1" value="0"> °
+    </div>
+    <div class="row">
+      <button id="btnMove" class="primary" data-i18n="move" disabled></button>
+      <button id="btnCenter" data-i18n="center" disabled></button>
+      <button id="btnTxTest" data-i18n="txtest" disabled></button>
+    </div>
+    <div class="row">
+      <button id="btnTorqueOn" data-i18n="torqueOn" disabled></button>
+      <button id="btnTorqueOff" data-i18n="torqueOff" disabled></button>
+      <button id="btnPos" data-i18n="readPos" disabled></button>
+      <span id="posText" class="muted"></span>
+    </div>
+  </section>
+
+  <!-- 6. 設定 -->
+  <section id="secSettings">
+    <h2><span class="num">6</span><span data-i18n="setTitle"></span></h2>
+    <div id="idBox">
+      <div class="row">
+        <label><span data-i18n="oldId"></span> <input id="oldId" type="number" min="0"></label>
+        <label><span data-i18n="newId"></span> <input id="newId" type="number" min="0"></label>
+        <button id="btnSetId" class="primary" data-i18n="changeId" disabled></button>
+      </div>
+      <p id="oneServoNote" class="msg warn hidden" data-i18n="oneServo"></p>
+    </div>
+    <div id="baudBox">
+      <div class="row">
+        <select id="baudSelect"></select>
+        <label><input id="baudServo" type="checkbox" checked> <span data-i18n="baudServoToo"></span></label>
+        <button id="btnBaud" data-i18n="changeBaud" disabled></button>
+      </div>
+    </div>
+    <div id="setMsg" class="msg hidden"></div>
+  </section>
+
+  <!-- ターミナル -->
+  <section class="wide">
+    <h2><span data-i18n="termTitle"></span></h2>
+    <div id="term"></div>
+    <div class="row">
+      <input id="termInput" style="flex:1" data-i18n-ph="termPh">
+      <button id="btnSend" data-i18n="send" disabled></button>
+      <label class="muted"><input id="showApi" type="checkbox"> <span data-i18n="showApi"></span></label>
+      <button id="btnClear" data-i18n="clear"></button>
+    </div>
+  </section>
+</main>
+
+<dialog id="dlg">
+  <p id="dlgText"></p>
+  <div class="row" style="justify-content:flex-end">
+    <button id="dlgNo"></button>
+    <button id="dlgYes" class="primary"></button>
+  </div>
+</dialog>
+
+<script type="text/plain" id="esptoolB64">/*__ESPTOOL_B64__*/</script>
+<script type="application/json" id="firmwareJson">/*__FIRMWARE_JSON__*/</script>
+<script>
+"use strict";
+
+// ===== 言語 =====
+const I18N = {
+  ja: {
+    unsupported: "このブラウザは Web Serial に対応していません。Chrome または Edge（PC版）で開いてください。",
+    connTitle: "接続", connect: "接続", disconnect: "切断",
+    connHint: "ESP32 をUSBでつなぎ「接続」を押してください。ESP32系のUSBチップ（CP210x / CH340 / FTDI / ESP32内蔵）だけが一覧に出ます。一度許可したポートには、次から自動でつながります。",
+    osHelpTitle: "つながらないとき（Windows / Mac / Ubuntu）",
+    osHelp: "<b>Windows</b>：CP210x / CH340 のドライバを入れてください。<br><b>Mac</b>：多くは追加のドライバ不要です（CH340 の古い機種はドライバが必要）。<br><b>Ubuntu</b>：<code>sudo usermod -a -G dialout $USER</code> を実行し、ログインし直してください。Snap版の Chromium では <code>sudo snap connect chromium:raw-usb</code> も必要です。<br>他のソフト（Arduino IDE / PlatformIO のモニターなど）がポートを使っていると開けません。",
+    stNone: "未接続", stOpening: "接続中…", stConnected: "接続済み", stNoFw: "ファームウェアなし", stFlashing: "書き込み中…",
+    fwTitle: "ファームウェア", fwEmbedded: "このページの版", fwBoard: "ボードの版", flash: "書き込む",
+    flashHint: "書き込みには30秒ほどかかります。始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離してください。",
+    fwNone: "ServosAreGo が見つかりません。「書き込む」でファームウェアを書き込んでください。",
+    fwOld: "ボードの版がこのページと違います。「書き込む」で更新できます。",
+    fwOk: "最新のファームウェアです。",
+    flashConfirm: "ESP32 に ServosAreGo を書き込みます。よろしいですか？",
+    flashDone: "書き込みが終わりました。起動を待っています…", flashFail: "書き込みに失敗しました：",
+    portBusy: "（ポートを開けません。このページを開いている別のタブや、Arduino IDE / PlatformIO のモニターを閉じてから、USB を抜き差ししてください）",
+    wiring: "配線", wiring0: "① 半二重回路あり（Meridian Board 等）", wiring1: "② 半二重回路なし（RX・TX 直結）",
+    wiringNote: "② では ESP32 の RX（GPIO32）と TX（GPIO27）を両方サーボの信号線につなぎます。受信中は TX の出力を切り、RX の内部プルアップで線を HIGH に保ちます。サーボの信号が 5V のときは ESP32（3.3V）の入力を超えるため、レベル変換などを入れてください。",
+    typeTitle: "サーボの種類", apply: "選ぶ", detect: "自動判別", detectHint: "読み取りだけで調べます（サーボは動きません）",
+    typeChoose: "サーボの種類を選ぶか、自動判別を押してください。", restarting: "再起動しています…",
+    detecting: "自動判別中…", detectedAs: "見つかりました：", detectNone: "見つかりませんでした。配線と電源を確かめるか、手動で選んでください。",
+    askPwm: "シリアルサーボは見つかりませんでした。PWM サーボを試しますか？（信号線にPWMを出します。XBUSサーボなどは電源を入れ直すまでPWMモードになります）",
+    tryPwm: "試す", skip: "飛ばす",
+    pwmSweep: "PWM で ±30° 往復させています。サーボは動いていますか？", moved: "動いた", notMoved: "動かない",
+    scanTitle: "サーボを探す", maxId: "最大ID", scan: "検索", model: "型番", target: "ターゲットID", sync: "一斉制御リスト", set: "設定",
+    scanNone: "見つかりませんでした。通信速度・配線・電源を確かめてください。", scanFound: "台見つかりました。",
+    useTarget: "ターゲット", readPosShort: "位置",
+    moveTitle: "動かす", moveHint: "角度・中央・トルクは一斉制御リストのサーボに送ります。送信テストは全IDを動かします（返信不要）。",
+    move: "角度を送る", center: "中央", txtest: "送信テスト", torqueOn: "トルクON", torqueOff: "脱力", readPos: "位置を読む",
+    setTitle: "設定を変える", oldId: "今のID", newId: "新しいID", changeId: "IDを変える",
+    oneServo: "この種類は ID なしで書き込みます。変えたいサーボを1台だけつないでください。",
+    idConfirm: "ID を {old} から {new} に変えます。よろしいですか？", idConfirmOne: "つながっている1台の ID を {new} にします。よろしいですか？",
+    baudServoToo: "サーボも変える", changeBaud: "通信速度を変える",
+    baudConfirm: "通信速度を {baud} bps にします（{who}）。よろしいですか？", whoBoth: "サーボとESP32", whoHost: "ESP32だけ",
+    done: "完了しました。", failed: "失敗しました。ターミナルの表示を見てください。",
+    termTitle: "ターミナル（テキストメニュー）", termPh: "コマンドを入力して Enter（例: f / x / h）", send: "送信", showApi: "@行を表示", clear: "消去",
+    yes: "はい", no: "いいえ", ok: "OK", cancel: "キャンセル", busy: "前の操作が終わるまでお待ちください。",
+  },
+  en: {
+    unsupported: "This browser does not support Web Serial. Please open this page in desktop Chrome or Edge.",
+    connTitle: "Connect", connect: "Connect", disconnect: "Disconnect",
+    connHint: "Connect the ESP32 by USB and press Connect. Only ESP32-type USB chips (CP210x / CH340 / FTDI / ESP32 native) are listed. Ports you allowed once are connected automatically next time.",
+    osHelpTitle: "Cannot connect? (Windows / Mac / Ubuntu)",
+    osHelp: "<b>Windows</b>: install the CP210x / CH340 driver.<br><b>Mac</b>: usually no driver is needed (old CH340 boards need one).<br><b>Ubuntu</b>: run <code>sudo usermod -a -G dialout $USER</code> and log in again. For Snap Chromium also run <code>sudo snap connect chromium:raw-usb</code>.<br>The port cannot be opened while another program (Arduino IDE, PlatformIO monitor, ...) uses it.",
+    stNone: "Not connected", stOpening: "Connecting…", stConnected: "Connected", stNoFw: "No firmware", stFlashing: "Flashing…",
+    fwTitle: "Firmware", fwEmbedded: "This page", fwBoard: "Board", flash: "Flash",
+    flashHint: "Flashing takes about 30 s. If it does not start, hold the BOOT button on the board, press Flash, and release when writing starts.",
+    fwNone: "ServosAreGo was not found. Press Flash to write the firmware.",
+    fwOld: "The board firmware differs from this page. Press Flash to update.",
+    fwOk: "Firmware is up to date.",
+    flashConfirm: "Write ServosAreGo to the ESP32?",
+    flashDone: "Flashing finished. Waiting for the board to start…", flashFail: "Flashing failed: ",
+    portBusy: "(Cannot open the port. Close other tabs with this page and any Arduino IDE / PlatformIO monitor, then replug the USB cable.)",
+    wiring: "Wiring", wiring0: "(1) Half-duplex circuit (Meridian Board etc.)", wiring1: "(2) No circuit (RX + TX direct)",
+    wiringNote: "With (2), connect both ESP32 RX (GPIO32) and TX (GPIO27) to the servo signal line. TX is released while receiving, and the RX internal pull-up holds the line HIGH. If the servo signal is 5 V, it exceeds the ESP32 3.3 V input: add a level shifter or similar.",
+    typeTitle: "Servo type", apply: "Select", detect: "Auto detect", detectHint: "Uses read commands only (servos do not move)",
+    typeChoose: "Select the servo type, or press Auto detect.", restarting: "Restarting…",
+    detecting: "Detecting…", detectedAs: "Detected: ", detectNone: "No servo detected. Check wiring and power, or select the type manually.",
+    askPwm: "No serial servo was found. Try a PWM servo? (PWM is sent on the signal line. XBUS servos and some others stay in PWM mode until power-cycled.)",
+    tryPwm: "Try", skip: "Skip",
+    pwmSweep: "Sweeping ±30° by PWM. Is the servo moving?", moved: "Moving", notMoved: "Not moving",
+    scanTitle: "Find servos", maxId: "Max ID", scan: "Scan", model: "Model", target: "Target ID", sync: "Sync list", set: "Set",
+    scanNone: "No servos found. Check baud rate, wiring and power.", scanFound: " servo(s) found.",
+    useTarget: "Target", readPosShort: "Pos",
+    moveTitle: "Move", moveHint: "Angle, center and torque go to the servos in the sync list. TX test moves all IDs (no reply needed).",
+    move: "Send angle", center: "Center", txtest: "TX test", torqueOn: "Torque ON", torqueOff: "Release", readPos: "Read position",
+    setTitle: "Settings", oldId: "Current ID", newId: "New ID", changeId: "Change ID",
+    oneServo: "This type writes the ID without addressing. Connect only the ONE servo to change.",
+    idConfirm: "Change ID {old} to {new}?", idConfirmOne: "Set the ID of the connected servo to {new}?",
+    baudServoToo: "Servo too", changeBaud: "Change baud rate",
+    baudConfirm: "Change baud rate to {baud} bps ({who})?", whoBoth: "servo and ESP32", whoHost: "ESP32 only",
+    done: "Done.", failed: "Failed. See the terminal output.",
+    termTitle: "Terminal (text menu)", termPh: "Type a command and press Enter (e.g. f / x / h)", send: "Send", showApi: "Show @ lines", clear: "Clear",
+    yes: "Yes", no: "No", ok: "OK", cancel: "Cancel", busy: "Please wait until the previous operation finishes.",
+  },
+};
+let lang = "ja";
+try { lang = localStorage.getItem("sag.lang") || (navigator.language || "ja").slice(0, 2); } catch (e) {}
+if (!I18N[lang]) lang = "en";
+const t = (key, vars) => {
+  let s = (I18N[lang] && I18N[lang][key]) || I18N.en[key] || key;
+  for (const k in vars || {}) s = s.replace("{" + k + "}", vars[k]);
+  return s;
+};
+function applyLang() {
+  document.documentElement.lang = lang;
+  document.querySelectorAll("[data-i18n]").forEach(el => el.textContent = t(el.dataset.i18n));
+  document.querySelectorAll("[data-i18n-html]").forEach(el => el.innerHTML = t(el.dataset.i18nHtml));
+  document.querySelectorAll("[data-i18n-ph]").forEach(el => el.placeholder = t(el.dataset.i18nPh));
+  $("lang").value = lang;
+  renderConn();
+  renderAll();
+}
+
+// ===== 共通 =====
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const EMBEDDED_VERSION = "/*__FW_VERSION__*/";
+const BAUD = 115200;
+// ESP32 ボードでよく使われる USB シリアルチップ
+const USB_CHIPS = { 0x10C4: "CP210x", 0x1A86: "CH340 / CH9102", 0x0403: "FTDI", 0x303A: "ESP32 USB" };
+const PORT_FILTERS = Object.keys(USB_CHIPS).map(v => ({ usbVendorId: Number(v) }));
+
+const state = {
+  port: null, connected: false, phase: "none",   // none / opening / connected / nofw / flashing
+  fw: null,                                       // @hello の返信（ver, kinds, stage, kind, info）
+  kinds: /*__KINDS_JSON__*/, kind: -1, stage: "", info: null, // 種類の一覧（接続後はボードの一覧に置き換える）
+  busy: false, detecting: false, servos: [],
+  wiring: null,                                   // 配線 0: 半二重回路あり, 1: なし（古いファームウェアでは null）
+};
+
+// ===== ターミナル =====
+const term = $("term");
+function termLine(text, cls) {
+  if (cls === "api" && !$("showApi").checked) return;
+  const div = document.createElement("div");
+  if (cls) div.className = cls;
+  div.textContent = text;
+  term.appendChild(div);
+  while (term.childNodes.length > 3000) term.removeChild(term.firstChild);
+  term.scrollTop = term.scrollHeight;
+}
+const sys = text => termLine("# " + text, "sys");
+
+// ===== シリアル =====
+let reader = null, readLoopDone = null, lineBuf = "";
+const pending = [];   // 返信待ち {cmd, resolve, timer}
+const eventWaiters = []; // イベント待ち {names, resolve, timer}
+
+// Mac の CP210x などは、閉じた直後に開き直すと失敗することがある（NetworkError）。少し待って開き直す。
+// esptool-js も通信速度の切り替えでポートを閉じて開き直すので、port.open 自体を置き換えておく
+function retryOpen(port) {
+  if (port.__retryOpen) return port;
+  const open = port.open.bind(port);
+  port.open = async options => {
+    for (let attempt = 1; ; attempt++) {
+      try { return await open(options); }
+      catch (e) {
+        if (e.name !== "NetworkError" || attempt >= 8) throw e;
+        await sleep(300);
+      }
+    }
+  };
+  port.__retryOpen = true;
+  return port;
+}
+
+async function openPort(port) {
+  await retryOpen(port).open({ baudRate: BAUD, bufferSize: 16384 });
+  state.port = port;
+  state.connected = true;
+  lineBuf = "";
+  readLoopDone = readLoop(port);
+}
+
+async function readLoop(port) {
+  const decoder = new TextDecoder();
+  while (port.readable && state.port === port) {
+    reader = port.readable.getReader();
+    try {
+      for (;;) {
+        const { value, done } = await reader.read();
+        if (done) break;
+        lineBuf += decoder.decode(value, { stream: true });
+        let i;
+        while ((i = lineBuf.indexOf("\n")) >= 0) {
+          const line = lineBuf.slice(0, i).replace(/\r$/, "");
+          lineBuf = lineBuf.slice(i + 1);
+          onLine(line);
+        }
+      }
+    } catch (e) {
+      // 読み取りエラー（抜けた・リセットなど）
+    } finally {
+      try { reader.releaseLock(); } catch (e) {}
+      reader = null;
+    }
+    if (!state.connected) break;
+    await sleep(50);
+  }
+}
+
+async function closePort() {
+  const port = state.port;
+  state.connected = false;
+  if (!port) return;
+  try { if (reader) await reader.cancel(); } catch (e) {}
+  try { await readLoopDone; } catch (e) {}
+  try { await port.close(); } catch (e) {}
+  state.port = null;
+  failPending("closed");
+}
+
+async function writeText(text) {
+  if (!state.port || !state.port.writable) throw new Error("not connected");
+  const writer = state.port.writable.getWriter();
+  try { await writer.write(new TextEncoder().encode(text)); }
+  finally { writer.releaseLock(); }
+}
+
+function onLine(line) {
+  // 返信は行の途中から始まることもある（直前の表示が改行で終わっていないとき）
+  const at = line.indexOf("@{");
+  if (at > 0) { termLine(line.slice(0, at)); line = line.slice(at); }
+  if (line.startsWith("@{")) {
+    termLine(line, "api");
+    let msg;
+    try { msg = JSON.parse(line.slice(1)); } catch (e) { return; }
+    if (msg.re !== undefined) onReply(msg);
+    if (msg.ev !== undefined) onEvent(msg);
+    return;
+  }
+  termLine(line);
+}
+
+// コマンドを送り、同じ名前の返信を待つ（1つずつ順番に）
+let chain = Promise.resolve();
+function command(cmd, args = "", timeoutMs = 5000) {
+  const run = () => new Promise((resolve, reject) => {
+    const entry = { cmd, resolve, timer: null };
+    entry.timer = setTimeout(() => {
+      const i = pending.indexOf(entry);
+      if (i >= 0) pending.splice(i, 1);
+      reject(new Error("timeout: @" + cmd));
+    }, timeoutMs);
+    pending.push(entry);
+    const line = "@" + cmd + (args !== "" ? " " + args : "");
+    termLine("> " + line, "tx");
+    writeText(line + "\n").catch(e => { clearTimeout(entry.timer); reject(e); });
+  });
+  const p = chain.then(run, run);
+  chain = p.catch(() => {});
+  return p;
+}
+function onReply(msg) {
+  const i = pending.findIndex(p => p.cmd === msg.re);
+  if (msg.info) state.info = msg.info;
+  if (msg.kinds) state.kinds = msg.kinds;
+  if (msg.stage) { state.stage = msg.stage; state.kind = msg.kind; }
+  if (msg.wiring !== undefined) state.wiring = msg.wiring;
+  renderAll();
+  if (i < 0) return;
+  const entry = pending.splice(i, 1)[0];
+  clearTimeout(entry.timer);
+  entry.resolve(msg);
+}
+function failPending(reason) {
+  while (pending.length) { const p = pending.shift(); clearTimeout(p.timer); }
+  eventWaiters.splice(0).forEach(w => { clearTimeout(w.timer); w.resolve(null); });
+}
+function waitEvent(names, timeoutMs) {
+  return new Promise(resolve => {
+    const w = { names, resolve, timer: setTimeout(() => { eventWaiters.splice(eventWaiters.indexOf(w), 1); resolve(null); }, timeoutMs) };
+    eventWaiters.push(w);
+  });
+}
+
+// ===== ファームウェアからのイベント =====
+function onEvent(msg) {
+  const ev = msg.ev;
+  for (const w of eventWaiters.slice()) {
+    if (w.names.includes(ev)) { eventWaiters.splice(eventWaiters.indexOf(w), 1); clearTimeout(w.timer); w.resolve(msg); }
+  }
+  if (ev === "ready") {
+    state.fw = msg; state.kinds = msg.kinds || state.kinds; state.stage = "run"; state.kind = msg.kind; state.info = msg.info || null;
+    if (msg.wiring !== undefined) state.wiring = msg.wiring;
+    if (!state.detecting) setMsg("typeMsg", "", ""); // 自動判別の結果は残す
+    state.detecting = false;
+    checkFirmwareVersion();
+  } else if (ev === "menu") {
+    state.stage = "menu"; state.kind = msg.kind; state.info = null;
+    // 通常の起動（時間切れで前回の種類になる）なら、その種類で始める
+    if (msg.timeout > 0 && msg.kind >= 0 && !state.detecting) {
+      command("select", String(msg.kind)).catch(() => {});
+    } else if (!state.detecting) {
+      setMsg("typeMsg", t("typeChoose"), "warn");
+    }
+  } else if (ev === "restart") {
+    state.stage = "restart"; state.info = null;
+    setMsg("typeMsg", t("restarting"), "");
+  } else if (ev === "detecting") {
+    state.detecting = true;
+    $("detectSteps").innerHTML = ""; $("detectSteps").classList.remove("hidden");
+    setMsg("typeMsg", t("detecting"), "");
+  } else if (ev === "detectstep") {
+    const li = document.createElement("li");
+    li.textContent = (msg.found ? "✔ " : "· ") + msg.label;
+    li.className = msg.found ? "found" : "miss";
+    $("detectSteps").appendChild(li);
+  } else if (ev === "askpwm") {
+    ask(t("askPwm"), t("tryPwm"), t("skip")).then(yes => writeText(yes ? "y\n" : "\n"));
+  } else if (ev === "pwmsweep") {
+    ask(t("pwmSweep"), t("moved"), t("notMoved")).then(yes => writeText(yes ? "\n" : "n\n"));
+  } else if (ev === "detected") {
+    state.detecting = msg.kind >= 0;
+    if (msg.kind >= 0) setMsg("typeMsg", t("detectedAs") + (state.kinds[msg.kind] || msg.kind) + (msg.baud ? " @ " + msg.baud + " bps" : ""), "ok");
+    else { state.detecting = false; setMsg("typeMsg", t("detectNone"), "err"); }
+  }
+  renderAll();
+}
+
+// ===== 接続の流れ =====
+async function hello(timeoutMs) {
+  try { return await command("hello", "", timeoutMs); } catch (e) { return null; }
+}
+
+// ボードをリセットしてアプリを起動（EN を RTS、IO0 を DTR でつないだ一般的な自動リセット回路）
+async function resetBoard() {
+  try {
+    await state.port.setSignals({ dataTerminalReady: false, requestToSend: true });
+    await sleep(120);
+    await state.port.setSignals({ dataTerminalReady: false, requestToSend: false });
+  } catch (e) {}
+}
+
+async function connectFlow(port) {
+  if (state.phase === "opening" || state.phase === "flashing") return;
+  setPhase("opening");
+  try {
+    if (state.port && state.port !== port) await closePort();
+    if (!state.port) await openPort(port);
+  } catch (e) {
+    sys("open failed: " + e.message);
+    if (e.name === "NetworkError") setMsg("fwMsg", t("portBusy"), "err");
+    setPhase("none");
+    return;
+  }
+  renderPortInfo();
+  // 動いている ServosAreGo に聞く → 返事がなければリセットして起動を待つ
+  let reply = await hello(1200);
+  if (!reply) {
+    await resetBoard();
+    await waitEvent(["menu", "ready"], 5000);
+    reply = await hello(1500);
+  }
+  if (reply) {
+    state.fw = reply;
+    setPhase("connected");
+    checkFirmwareVersion();
+  } else {
+    state.fw = null;
+    setPhase("nofw");
+    setMsg("fwMsg", t("fwNone"), "warn");
+  }
+  renderAll();
+}
+
+function checkFirmwareVersion() {
+  if (!state.fw) return;
+  if (state.fw.ver !== EMBEDDED_VERSION) setMsg("fwMsg", t("fwOld"), "warn");
+  else setMsg("fwMsg", t("fwOk"), "ok");
+  if (state.phase === "nofw") setPhase("connected");
+}
+
+async function onConnectClick() {
+  try {
+    const port = await navigator.serial.requestPort({ filters: PORT_FILTERS });
+    await connectFlow(port);
+  } catch (e) {
+    if (e.name !== "NotFoundError") sys(e.message);
+  }
+}
+
+async function onDisconnectClick() {
+  await closePort();
+  state.fw = null; state.info = null; state.stage = ""; state.wiring = null;
+  setPhase("none");
+  renderAll();
+}
+
+// 許可済みのポートを自動で選ぶ（1つならそれ、複数なら ServosAreGo が返事をするもの）
+async function autoConnect() {
+  const ports = (await navigator.serial.getPorts()).filter(isEspPort);
+  if (ports.length === 0) return;
+  if (ports.length === 1) return connectFlow(ports[0]);
+  for (const port of ports) {
+    try {
+      await openPort(port);
+      const reply = await hello(1200);
+      if (reply) { await closePort(); return connectFlow(port); }
+      await closePort();
+    } catch (e) { await closePort().catch(() => {}); }
+  }
+  return connectFlow(ports[0]);
+}
+function isEspPort(port) {
+  const info = port.getInfo ? port.getInfo() : {};
+  return info.usbVendorId === undefined || USB_CHIPS[info.usbVendorId] !== undefined;
+}
+
+// ===== 書き込み =====
+let esptoolModule = null;
+async function loadEsptool() {
+  if (esptoolModule) return esptoolModule;
+  const code = atob($("esptoolB64").textContent.trim());
+  const bytes = Uint8Array.from(code, c => c.charCodeAt(0));
+  const url = URL.createObjectURL(new Blob([bytes], { type: "text/javascript" }));
+  esptoolModule = await import(url);
+  return esptoolModule;
+}
+function firmwareParts() {
+  const fw = JSON.parse($("firmwareJson").textContent);
+  return fw.parts.map(p => ({ address: p.address, data: Uint8Array.from(atob(p.data), c => c.charCodeAt(0)) }));
+}
+
+async function flashFirmware() {
+  if (!(await ask(t("flashConfirm"), t("yes"), t("cancel")))) return;
+  let port = state.port;
+  if (!port) {
+    try { port = await navigator.serial.requestPort({ filters: PORT_FILTERS }); } catch (e) { return; }
+  }
+  await closePort();
+  retryOpen(port);
+  setPhase("flashing");
+  await sleep(300); // 閉じた直後に開き直さない
+  const bar = $("flashProgress");
+  bar.classList.remove("hidden"); bar.value = 0;
+  const terminal = {
+    clean() {}, writeLine(s) { sys(s); }, write(s) { if (s.trim()) sys(s); },
+  };
+  let transport = null;
+  try {
+    const { ESPLoader, Transport } = await loadEsptool();
+    const parts = firmwareParts();
+    const total = parts.reduce((n, p) => n + p.data.length, 0);
+    const before = parts.map((p, i) => parts.slice(0, i).reduce((n, q) => n + q.data.length, 0));
+    transport = new Transport(port, false);
+    const loader = new ESPLoader({ transport, baudrate: 460800, romBaudrate: 115200, terminal });
+    const chip = await loader.main();
+    sys("chip: " + chip);
+    await loader.writeFlash({
+      fileArray: parts, flashMode: "keep", flashFreq: "keep", flashSize: "keep", eraseAll: false, compress: true,
+      reportProgress: (i, written, size) => { bar.value = Math.round(100 * (before[i] + written * parts[i].data.length / size) / total); },
+    });
+    bar.value = 100;
+    await loader.after("hard_reset");
+    await transport.disconnect();
+    transport = null;
+    setMsg("fwMsg", t("flashDone"), "");
+    setPhase("none");
+    await sleep(500);
+    await connectFlow(port);
+  } catch (e) {
+    const reason = (e && e.message ? e.message : String(e)) + (e && e.name === "NetworkError" ? " " + t("portBusy") : "");
+    sys(t("flashFail") + reason);
+    setMsg("fwMsg", t("flashFail") + reason, "err");
+    if (transport) { try { await transport.disconnect(); } catch (e2) {} }
+    setPhase("none");
+  } finally {
+    setTimeout(() => bar.classList.add("hidden"), 1500);
+  }
+}
+
+// ===== 操作 =====
+// ボタンの処理（1つずつ）。失敗したらメッセージを出す
+async function run(msgId, fn) {
+  if (state.busy) { setMsg(msgId, t("busy"), "warn"); return; }
+  state.busy = true; renderAll();
+  try {
+    const reply = await fn();
+    if (reply && reply.ok === false) setMsg(msgId, t("failed"), "err");
+    else if (reply) setMsg(msgId, t("done"), "ok");
+    return reply;
+  } catch (e) {
+    setMsg(msgId, t("failed") + " (" + e.message + ")", "err");
+  } finally {
+    state.busy = false; renderAll();
+  }
+}
+
+async function doSelect() {
+  const kind = Number($("kindSelect").value);
+  await run("typeMsg", () => command("select", String(kind)));
+}
+// 配線を変える（動作中なら変わるとボードが再起動する）
+async function doWiring() {
+  const wiring = Number($("wiringSelect").value);
+  const reply = await run("typeMsg", () => command("wiring", String(wiring)));
+  if (reply && reply.ok) {
+    state.wiring = wiring;
+    if (state.stage === "run") setMsg("typeMsg", t("restarting"), "");
+  }
+  renderAll();
+}
+async function doDetect() {
+  $("detectSteps").innerHTML = "";
+  await run("typeMsg", () => command("detect"));
+  setMsg("typeMsg", t("restarting"), "");
+}
+async function doScan() {
+  const reply = await run("scanMsg", () => command("scan", $("scanMax").value || "20", 120000));
+  if (!reply || reply.ok === false) return;
+  state.servos = reply.servos || [];
+  if (state.servos.length === 0) setMsg("scanMsg", t("scanNone"), "warn");
+  else setMsg("scanMsg", state.servos.length + (lang === "ja" ? " " : "") + t("scanFound"), "ok");
+  renderScan();
+}
+async function doMove() { await run("setMsg", () => command("move", $("angleNum").value, 10000)); }
+async function readPosition(id) {
+  const reply = await run("setMsg", () => command("pos", String(id)));
+  if (reply && reply.ok) $("posText").textContent = "ID " + reply.id + ": " + reply.deg + "°";
+  else $("posText").textContent = "ID " + id + ": -";
+}
+async function doSetId() {
+  const info = state.info || {};
+  const oldId = $("oldId").value, newId = $("newId").value;
+  if (newId === "") return;
+  const text = info.oneServoForId ? t("idConfirmOne", { new: newId }) : t("idConfirm", { old: oldId, new: newId });
+  if (!(await ask(text, t("yes"), t("cancel")))) return;
+  await run("setMsg", () => command("setid", (oldId === "" ? "0" : oldId) + " " + newId, 20000));
+}
+async function doBaud() {
+  const info = state.info || {};
+  const index = Number($("baudSelect").value);
+  const servoToo = $("baudServo").checked;
+  const text = t("baudConfirm", { baud: info.bauds[index], who: servoToo ? t("whoBoth") : t("whoHost") });
+  if (!(await ask(text, t("yes"), t("cancel")))) return;
+  await run("setMsg", () => command("baud", index + " " + (servoToo ? 1 : 0), 20000));
+}
+
+// ===== 表示 =====
+function setMsg(id, text, cls) {
+  const el = $(id);
+  el.textContent = text;
+  el.className = "msg" + (cls ? " " + cls : "") + (text ? "" : " hidden");
+}
+function setPhase(phase) { state.phase = phase; renderConn(); renderAll(); }
+function renderConn() {
+  const map = { none: ["", "stNone"], opening: ["warn", "stOpening"], connected: ["ok", "stConnected"], nofw: ["warn", "stNoFw"], flashing: ["warn", "stFlashing"] };
+  const [cls, key] = map[state.phase] || map.none;
+  $("connDot").className = "dot " + cls;
+  $("connText").textContent = t(key);
+}
+function renderPortInfo() {
+  const info = state.port && state.port.getInfo ? state.port.getInfo() : {};
+  $("portInfo").textContent = info.usbVendorId !== undefined
+    ? (USB_CHIPS[info.usbVendorId] || "USB") + " (VID " + info.usbVendorId.toString(16).toUpperCase().padStart(4, "0") + ":" + (info.usbProductId || 0).toString(16).toUpperCase().padStart(4, "0") + ")"
+    : "";
+}
+function renderScan() {
+  const tbody = $("scanTable").querySelector("tbody");
+  tbody.innerHTML = "";
+  for (const s of state.servos) {
+    const tr = document.createElement("tr");
+    tr.innerHTML = "<td></td><td></td><td></td>";
+    tr.children[0].textContent = s.id;
+    tr.children[1].textContent = s.model;
+    const b1 = document.createElement("button"); b1.textContent = t("useTarget");
+    b1.onclick = () => run("scanMsg", () => command("target", String(s.id)));
+    const b2 = document.createElement("button"); b2.textContent = t("readPosShort");
+    b2.onclick = () => readPosition(s.id);
+    tr.children[2].append(b1, " ", b2);
+    tbody.appendChild(tr);
+  }
+  $("scanTable").classList.toggle("hidden", state.servos.length === 0);
+}
+function renderAll() {
+  // 種類の一覧
+  const sel = $("kindSelect");
+  if (sel.options.length !== state.kinds.length) {
+    sel.innerHTML = "";
+    state.kinds.forEach((name, i) => sel.add(new Option((i + 1) + ". " + name, i)));
+  }
+  if (state.kind >= 0 && document.activeElement !== sel) sel.value = state.kind;
+
+  const ready = state.connected && state.fw && !state.busy && state.phase === "connected";
+  const running = ready && state.stage === "run" && state.info;
+  const info = state.info || {};
+  const hasId = running && info.idMin >= 0;
+  const hasBaud = running && info.bauds && info.bauds.length > 0;
+
+  $("btnConnect").disabled = state.phase === "opening" || state.phase === "flashing";
+  $("btnDisconnect").disabled = !state.port;
+  $("btnFlash").disabled = state.phase === "opening" || state.phase === "flashing" || state.busy;
+  $("btnSelect").disabled = !(ready && (state.stage === "run" || state.stage === "menu"));
+  $("btnDetect").disabled = $("btnSelect").disabled;
+  const wsel = $("wiringSelect");
+  wsel.disabled = $("btnSelect").disabled || state.wiring === null;
+  if (state.wiring !== null && document.activeElement !== wsel) wsel.value = state.wiring;
+  $("wiringNote").classList.toggle("hidden", wsel.value !== "1");
+  $("btnSend").disabled = !state.connected;
+  $("fwBoard").textContent = state.fw ? state.fw.ver : "-";
+
+  ["btnMove", "btnCenter", "btnTxTest", "btnTorqueOn", "btnTorqueOff"].forEach(id => $(id).disabled = !running);
+  ["btnScan", "btnTarget", "btnSync", "btnPos", "btnSetId"].forEach(id => $(id).disabled = !hasId);
+  $("btnBaud").disabled = !hasBaud;
+  $("secScan").classList.toggle("hidden", running && !hasId);
+  $("idBox").classList.toggle("hidden", running && !hasId);
+  $("baudBox").classList.toggle("hidden", running && !hasBaud);
+  $("oneServoNote").classList.toggle("hidden", !(running && info.oneServoForId));
+
+  if (running) {
+    // 角度の範囲
+    for (const id of ["angle", "angleNum"]) { $(id).min = info.angleMin; $(id).max = info.angleMax; }
+    if (hasId) {
+      $("scanMax").max = info.idMax;
+      if (document.activeElement !== $("targetId")) $("targetId").value = info.target;
+      if (document.activeElement !== $("syncIds")) $("syncIds").value = (info.sync || []).join(",");
+      if (document.activeElement !== $("oldId")) $("oldId").value = info.target;
+    }
+    if (hasBaud) {
+      const bsel = $("baudSelect");
+      const key = info.bauds.join(",");
+      if (bsel.dataset.key !== key) {
+        bsel.innerHTML = "";
+        info.bauds.forEach((b, i) => bsel.add(new Option(b + " bps", i)));
+        bsel.dataset.key = key;
+      }
+      if (document.activeElement !== bsel) bsel.value = info.baudIndex;
+    }
+  }
+  renderScan();
+}
+
+// ===== はい / いいえ =====
+function ask(text, yesLabel, noLabel) {
+  return new Promise(resolve => {
+    const dlg = $("dlg");
+    $("dlgText").textContent = text;
+    $("dlgYes").textContent = yesLabel;
+    $("dlgNo").textContent = noLabel;
+    const done = v => { dlg.close(); $("dlgYes").onclick = $("dlgNo").onclick = null; resolve(v); };
+    $("dlgYes").onclick = () => done(true);
+    $("dlgNo").onclick = () => done(false);
+    dlg.oncancel = e => { e.preventDefault(); done(false); };
+    dlg.showModal();
+  });
+}
+
+// ===== 初期化 =====
+function init() {
+  $("lang").onchange = () => { lang = $("lang").value; try { localStorage.setItem("sag.lang", lang); } catch (e) {} applyLang(); };
+  applyLang();
+  if (!("serial" in navigator)) {
+    $("unsupported").classList.remove("hidden");
+    $("btnConnect").disabled = true;
+    return;
+  }
+  $("btnConnect").onclick = onConnectClick;
+  $("btnDisconnect").onclick = onDisconnectClick;
+  $("btnFlash").onclick = flashFirmware;
+  $("btnSelect").onclick = doSelect;
+  $("btnDetect").onclick = doDetect;
+  $("wiringSelect").onchange = doWiring;
+  $("btnScan").onclick = doScan;
+  $("btnTarget").onclick = () => run("scanMsg", () => command("target", $("targetId").value));
+  $("btnSync").onclick = () => run("scanMsg", () => command("sync", $("syncIds").value.replace(/\s/g, "")));
+  $("btnMove").onclick = doMove;
+  $("btnCenter").onclick = () => { $("angle").value = $("angleNum").value = 0; return run("setMsg", () => command("center", "", 10000)); };
+  $("btnTxTest").onclick = () => run("setMsg", () => command("txtest", "", 20000));
+  $("btnTorqueOn").onclick = () => run("setMsg", () => command("torque", "1", 10000));
+  $("btnTorqueOff").onclick = () => run("setMsg", () => command("torque", "0", 10000));
+  $("btnPos").onclick = () => readPosition((state.info || {}).target);
+  $("btnSetId").onclick = doSetId;
+  $("btnBaud").onclick = doBaud;
+  $("angle").oninput = () => $("angleNum").value = $("angle").value;
+  $("angle").onchange = doMove; // スライダーを離したら送る
+  $("angleNum").onchange = () => { $("angle").value = $("angleNum").value; };
+  const sendTerm = () => {
+    const text = $("termInput").value;
+    termLine("> " + text, "tx");
+    writeText(text + "\n").catch(e => sys(e.message));
+    $("termInput").value = "";
+  };
+  $("btnSend").onclick = sendTerm;
+  $("termInput").onkeydown = e => { if (e.key === "Enter" && state.connected) sendTerm(); };
+  $("btnClear").onclick = () => term.innerHTML = "";
+
+  // 抜き差しに追従
+  navigator.serial.addEventListener("connect", e => { if (!state.port && isEspPort(e.target)) connectFlow(e.target); });
+  navigator.serial.addEventListener("disconnect", e => {
+    if (e.target === state.port) { state.connected = false; state.port = null; state.fw = null; state.info = null; state.wiring = null; failPending(); setPhase("none"); }
+  });
+  autoConnect();
+}
+init();
+</script>
+</body>
+</html>

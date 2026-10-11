@@ -463,7 +463,8 @@ int parseIdList(String input, u8 *out)
 // ===== コマンド =====
 
 // 指定範囲のIDを検索（スピード読み出しで確認。サーボは動かない）。見つかった数を返す
-u8 scanServos(int maxId, u8 *found, bool showDetail)
+// ics36: NULLでなければ、各サーボがICS3.6か（位置読み出しに応答したか）を格納（showDetail時のみ判定）
+u8 scanServos(int maxId, u8 *found, bool showDetail, bool *ics36 = NULL)
 {
   u8 count = 0;
   for (int id = ICS_ID_MIN; id <= maxId; id++)
@@ -472,11 +473,15 @@ u8 scanServos(int maxId, u8 *found, bool showDetail)
     if (speed < 0)
       continue;
 
+    if (ics36 != NULL)
+      ics36[count] = false;
     found[count++] = id;
     if (showDetail)
     {
       int stretch = icsReadParam(id, ICS_SC_STRETCH, SCAN_TIMEOUT);
       int pos = icsReadPosition(id, SCAN_TIMEOUT);
+      if (ics36 != NULL)
+        ics36[count - 1] = (pos >= 0);
       Serial.print("Found servo ID: ");
       Serial.print(id);
       Serial.print(" (");
@@ -515,6 +520,21 @@ void applyScanResult(const u8 *found, u8 count)
   Serial.println();
 }
 
+// 今の通信速度でID0-maxIdを検索し、見つかればターゲットと一斉制御リストに設定。見つかった数を返す
+u8 scanAtCurrentBaud(int maxId, u8 *found, bool *ics36)
+{
+  Serial.print("Scanning ID0 to ID");
+  Serial.print(maxId);
+  Serial.print(" at ");
+  Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
+  Serial.println(" bps...");
+
+  u8 count = scanServos(maxId, found, true, ics36);
+  if (count > 0)
+    applyScanResult(found, count);
+  return count;
+}
+
 // [f]コマンド: サーボ認識（見つからなければ全ボーレート検索を提案）
 void executeServoDetectionCommand()
 {
@@ -529,18 +549,8 @@ void executeServoDetectionCommand()
     return;
   }
 
-  Serial.print("Scanning ID0 to ID");
-  Serial.print(maxId);
-  Serial.print(" at ");
-  Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
-  Serial.println(" bps...");
-
-  u8 count = scanServos(maxId, found, true);
-  if (count > 0)
-  {
-    applyScanResult(found, count);
+  if (scanAtCurrentBaud(maxId, found, NULL) > 0)
     return;
-  }
 
   Serial.println("No servos detected");
   Serial.println("Press Enter to scan all baud rates (fastest first), or type any key + Enter to cancel:");
@@ -593,14 +603,9 @@ void executeChangeTargetIdCommand()
   Serial.println("Enter new target ID (0-31): ");
 
   long newId;
-  if (!parseNumber(readInput(), &newId) || newId < ICS_ID_MIN || newId > ICS_ID_MAX)
-  {
-    Serial.println("Error: ID out of range (0-31)");
-    return;
-  }
-  targetServoID = newId;
-  Serial.print("Target ID changed to: ");
-  Serial.println(targetServoID);
+  if (!parseNumber(readInput(), &newId))
+    newId = -1; // 範囲外としてエラー表示
+  apiSetTarget(newId);
 }
 
 // [n]コマンド: 一斉制御サーボIDリスト設定
@@ -614,36 +619,15 @@ void executeSetSyncServoIDsCommand()
   u8 newIDs[MAX_SYNC_SERVOS];
   int newCount = parseIdList(readInput(), newIDs);
   if (newCount < 0)
-  {
-    Serial.println("Error: Invalid ID list (valid IDs: 0-31)");
-    return;
-  }
-  memcpy(syncServoIDs, newIDs, newCount);
-  syncServoCount = newCount;
-  Serial.print("Sync servo IDs changed to: ");
-  printSyncServoIDs();
-  Serial.print(" (");
-  Serial.print(syncServoCount);
-  Serial.println(" servos)");
+    newCount = 0; // 不正としてエラー表示
+  apiSetSync(newIDs, newCount);
 }
 
 // [r]コマンド: 現在位置読み取り（ICS3.6）
 void executeReadPositionCommand()
 {
-  Serial.print("Reading position from servo ID ");
-  Serial.println(targetServoID);
-
-  int pos = icsReadPosition(targetServoID);
-  if (pos < 0)
-  {
-    Serial.println("Error: No response (current position read needs ICS3.6. For ICS3.5 use [d] to read while free)");
-    return;
-  }
-  Serial.print("Position: ");
-  Serial.print(pos);
-  Serial.print(" (");
-  Serial.print(positionToAngle(pos), 1);
-  Serial.println("°)");
+  float deg;
+  apiReadPosition(targetServoID, &deg);
 }
 
 // [v]コマンド: 電流・温度読み取り
@@ -713,9 +697,10 @@ void executeReadAllPositionsCommand()
   Serial.println(syncServoCount);
 }
 
-// 一斉制御リストの全サーボに同じ位置を送る
-void moveSyncServos(u16 pos)
+// 一斉制御リストの全サーボに同じ位置を送る。応答のあった数を返す
+u8 moveSyncServos(u16 pos)
 {
+  u8 ok = 0;
   for (u8 i = 0; i < syncServoCount; i++)
   {
     u8 id = syncServoIDs[i];
@@ -731,19 +716,20 @@ void moveSyncServos(u16 pos)
     {
       Serial.print(", current ");
       Serial.println(reply);
+      ok++;
     }
     else
     {
       Serial.println(", No response");
     }
   }
+  return ok;
 }
 
 // [c]コマンド: 全サーボ中央
 void executeResetAllPositionsCommand()
 {
-  Serial.println("Moving all servos to center (7500)...");
-  moveSyncServos(ICS_POS_CENTER);
+  apiCenter();
 }
 
 // [x]コマンド: 全サーボに角度を送信
@@ -752,18 +738,18 @@ void executeAngleCommand()
   Serial.println("Enter angle (-135 to 135 degrees): ");
 
   String input = readInput();
-  float angle = input.toFloat();
-  if (input.length() == 0 || angle < -ICS_ANGLE_LIMIT || angle > ICS_ANGLE_LIMIT)
+  if (input.length() == 0)
   {
     Serial.println("Error: Angle out of range (-135 to 135)");
     return;
   }
-  moveSyncServos(angleToPosition(angle));
+  apiMove(input.toFloat());
 }
 
-// [d]コマンド: 全サーボ脱力（位置0。返信で現在位置を表示）
-void executeFreeCommand()
+// 一斉制御リストの全サーボを脱力（位置0。返信で現在位置を表示）。応答のあった数を返す
+u8 freeSyncServos()
 {
+  u8 ok = 0;
   Serial.println("Free (torque off) all servos in the list...");
   for (u8 i = 0; i < syncServoCount; i++)
   {
@@ -778,17 +764,26 @@ void executeFreeCommand()
       Serial.print(" (");
       Serial.print(positionToAngle(pos), 1);
       Serial.println("°)");
+      ok++;
     }
     else
     {
       Serial.println(": No response");
     }
   }
+  return ok;
 }
 
-// [e]コマンド: 全サーボを現在位置で保持（脱力して現在位置を取得 → その位置を目標に）
-void executeHoldCommand()
+// [d]コマンド: 全サーボ脱力
+void executeFreeCommand()
 {
+  apiTorque(false);
+}
+
+// 一斉制御リストの全サーボを現在位置で保持（脱力して現在位置を取得 → その位置を目標に）。保持できた数を返す
+u8 holdSyncServos()
+{
+  u8 ok = 0;
   Serial.println("Hold all servos at the current position...");
   for (u8 i = 0; i < syncServoCount; i++)
   {
@@ -807,7 +802,15 @@ void executeHoldCommand()
     Serial.print(" (");
     Serial.print(positionToAngle(pos), 1);
     Serial.println("°)");
+    ok++;
   }
+  return ok;
+}
+
+// [e]コマンド: 全サーボを現在位置で保持
+void executeHoldCommand()
+{
+  apiTorque(true);
 }
 
 // [p]コマンド: パラメータ読み出し（ストレッチ・スピード・電流制限ではなく現在値の読み出し）
@@ -1133,40 +1136,16 @@ void executeSetBaudRateCommand()
   Serial.println(" (EEPROM) + ESP32");
   String mode = readInput();
 
-  if (mode == "1")
-  {
-    setHostBaudRate(baudIndex);
-    Serial.print("ESP32 baud rate changed to: ");
-    Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
-    Serial.println(" bps");
-    return;
-  }
-  if (mode != "2")
+  if (mode != "1" && mode != "2")
   {
     Serial.println("Error: Invalid selection");
     return;
   }
-
-  if (!modifyEeprom(targetServoID, applyBaudEdit, &baudIndex))
-    return;
-
-  // 新しい速度での応答を確認（反映タイミングはマニュアルに記載がないため両方を試す）
-  setHostBaudRate(baudIndex);
-  delay(100);
-  if (icsReadParam(targetServoID, ICS_SC_SPEED) >= 0)
-  {
-    Serial.print("Servo responds at ");
-    Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
-    Serial.println(" bps [OK]");
-  }
-  else
-  {
-    Serial.println("No response at the new baud rate yet. Power-cycle the servo, then use [f].");
-  }
+  apiSetBaud(baudIndex, mode == "2");
 }
 
-// [i]コマンド: サーボID変更（1台のみ接続）
-void executeChangeServoIdCommand()
+// サーボID変更の前半: 1台だけの接続を促し、今のIDを読み出す（失敗時 -1）
+int readCurrentServoId()
 {
   Serial.println("[Warning] Connect only ONE servo (ID commands are received by all servos).");
   Serial.println("Reading current ID...");
@@ -1175,22 +1154,25 @@ void executeChangeServoIdCommand()
   if (currentId < 0)
   {
     Serial.println("Error: No response to ID read");
-    return;
+    return -1;
   }
   Serial.print("Current servo ID: ");
   Serial.println(currentId);
-  Serial.println("Enter new servo ID (0-31): ");
+  return currentId;
+}
 
-  long newId;
-  if (!parseNumber(readInput(), &newId) || newId < ICS_ID_MIN || newId > ICS_ID_MAX)
+// サーボID変更の後半: 新しいIDを書き込んで読み返し、ターゲットと一斉制御リストに設定。成功時true
+bool writeServoId(int currentId, long newId)
+{
+  if (newId < ICS_ID_MIN || newId > ICS_ID_MAX)
   {
     Serial.println("Error: ID out of range (0-31)");
-    return;
+    return false;
   }
   if (newId == currentId)
   {
     Serial.println("New ID is the same as current ID. Nothing to do.");
-    return;
+    return true;
   }
 
   Serial.print("Changing servo ID ");
@@ -1202,7 +1184,7 @@ void executeChangeServoIdCommand()
   if (reply != newId)
   {
     Serial.println("Error: ID write failed (no reply or reply mismatch)");
-    return;
+    return false;
   }
   // 読み返して確認（応答が遅れることがあるため3回まで）
   int readBack = -1;
@@ -1216,13 +1198,26 @@ void executeChangeServoIdCommand()
     syncServoCount = 1;
     Serial.print("Target ID and sync servo IDs set to: ");
     Serial.println(newId);
+    return true;
   }
-  else
-  {
-    Serial.print("[Error] Verification failed (read ID: ");
-    Serial.print(readBack);
-    Serial.println("). Power-cycle the servo and use [i] again to check.");
-  }
+  Serial.print("[Error] Verification failed (read ID: ");
+  Serial.print(readBack);
+  Serial.println("). Power-cycle the servo and use [i] again to check.");
+  return false;
+}
+
+// [i]コマンド: サーボID変更（1台のみ接続）
+void executeChangeServoIdCommand()
+{
+  int currentId = readCurrentServoId();
+  if (currentId < 0)
+    return;
+  Serial.println("Enter new servo ID (0-31): ");
+
+  long newId;
+  if (!parseNumber(readInput(), &newId))
+    newId = -1; // 範囲外としてエラー表示
+  writeServoId(currentId, newId);
 }
 
 // [t]コマンド: 送信テスト（ID0-31全員に位置を送り往復。動けば送信OK、返信のあったIDも表示）
@@ -1354,7 +1349,7 @@ void loop()
 {
   if (Serial.available())
   {
-    String command = Serial.readString();
+    String command = Serial.readStringUntil('\n'); // 改行を受けたらすぐ処理（ブラウザからの操作を速くする）
     command.trim();
 
     if (command == "f")
@@ -1395,6 +1390,8 @@ void loop()
       executeRxDumpCommand();
     else if (command == "t")
       executeTxTestCommand();
+    else if (command.startsWith("@"))
+      handleApiCommand(command); // ブラウザ用の機械向けコマンド
     else if (command == "h")
       selectServoTypeAndRestart();
     else if (command.length() == 0)
@@ -1444,6 +1441,195 @@ void presetBaud(unsigned long baud)
     if (ICS_BAUD_RATES[i] == baud)
       servoBaudIndex = i;
   }
+}
+
+// ===== ブラウザ用API =====
+// 対話入力はせず、上の各コマンドと同じ処理をする（[x] などの対話コマンドもここを呼ぶ）
+
+// 今の状態と、できること
+void apiGetInfo(ApiInfo *info)
+{
+  info->idMin = ICS_ID_MIN;
+  info->idMax = ICS_ID_MAX;
+  info->angleMin = -ICS_ANGLE_LIMIT;
+  info->angleMax = ICS_ANGLE_LIMIT;
+  info->bauds = ICS_BAUD_RATES;
+  info->baudCount = ICS_BAUD_COUNT;
+  info->baudIndex = servoBaudIndex;
+  info->baud = ICS_BAUD_RATES[servoBaudIndex];
+  info->target = targetServoID;
+  info->syncIds = syncServoIDs;
+  info->syncCount = syncServoCount;
+  info->oneServoForId = true; // IDコマンドはIDを含まないため1台だけ接続
+}
+
+// [f]の検索（今の通信速度だけ。全ボーレート検索はしない）。見つかればターゲットと一斉制御リストも設定
+int apiScan(int maxId, ApiServo *found, int maxCount)
+{
+  maxId = constrain(maxId, ICS_ID_MIN, ICS_ID_MAX);
+  u8 ids[MAX_SYNC_SERVOS];
+  bool ics36[MAX_SYNC_SERVOS];
+  u8 count = scanAtCurrentBaud(maxId, ids, ics36);
+  if (count == 0)
+    Serial.println("No servos detected");
+
+  int n = constrain((int)count, 0, maxCount);
+  for (int i = 0; i < n; i++)
+  {
+    found[i].id = ids[i];
+    strlcpy(found[i].model, ics36[i] ? "ICS3.6" : "ICS3.5", API_MODEL_LEN);
+  }
+  return n;
+}
+
+// [z]: ターゲットID変更
+bool apiSetTarget(int id)
+{
+  if (id < ICS_ID_MIN || id > ICS_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-31)");
+    return false;
+  }
+  targetServoID = id;
+  Serial.print("Target ID changed to: ");
+  Serial.println(targetServoID);
+  return true;
+}
+
+// [n]: 一斉制御サーボIDリスト設定（昇順・重複なしにそろえる）
+bool apiSetSync(const uint8_t *ids, uint8_t count)
+{
+  bool selected[ICS_ID_MAX + 1] = {false};
+  for (u8 i = 0; i < count; i++)
+  {
+    if (ids[i] > ICS_ID_MAX)
+      count = 0; // 範囲外のIDがあれば不正
+    else
+      selected[ids[i]] = true;
+  }
+  if (count == 0)
+  {
+    Serial.println("Error: Invalid ID list (valid IDs: 0-31)");
+    return false;
+  }
+
+  syncServoCount = 0;
+  for (int id = ICS_ID_MIN; id <= ICS_ID_MAX; id++)
+  {
+    if (selected[id])
+      syncServoIDs[syncServoCount++] = id;
+  }
+  Serial.print("Sync servo IDs changed to: ");
+  printSyncServoIDs();
+  Serial.print(" (");
+  Serial.print(syncServoCount);
+  Serial.println(" servos)");
+  return true;
+}
+
+// [x]: 一斉制御リストを角度へ（位置指令でトルクONになる）。1台でも応答すればtrue
+bool apiMove(float deg)
+{
+  if (!(deg >= -ICS_ANGLE_LIMIT && deg <= ICS_ANGLE_LIMIT))
+  {
+    Serial.println("Error: Angle out of range (-135 to 135)");
+    return false;
+  }
+  return moveSyncServos(angleToPosition(deg)) > 0;
+}
+
+// [c]: 一斉制御リストを中央へ。1台でも応答すればtrue
+bool apiCenter()
+{
+  Serial.println("Moving all servos to center (7500)...");
+  return moveSyncServos(ICS_POS_CENTER) > 0;
+}
+
+// [e] / [d]: ON = 現在位置で保持, OFF = 脱力。1台でもできればtrue
+bool apiTorque(bool on)
+{
+  return (on ? holdSyncServos() : freeSyncServos()) > 0;
+}
+
+// [t]: 送信テスト
+bool apiTxTest()
+{
+  executeTxTestCommand();
+  return true;
+}
+
+// [r]: 現在位置読み取り（ICS3.6のみ。ICS3.5は失敗）
+bool apiReadPosition(int id, float *deg)
+{
+  if (id < ICS_ID_MIN || id > ICS_ID_MAX)
+  {
+    Serial.println("Error: ID out of range (0-31)");
+    return false;
+  }
+  Serial.print("Reading position from servo ID ");
+  Serial.println(id);
+
+  int pos = icsReadPosition(id);
+  if (pos < 0)
+  {
+    Serial.println("Error: No response (current position read needs ICS3.6. For ICS3.5 use [d] to read while free)");
+    return false;
+  }
+  *deg = positionToAngle(pos);
+  Serial.print("Position: ");
+  Serial.print(pos);
+  Serial.print(" (");
+  Serial.print(*deg, 1);
+  Serial.println("°)");
+  return true;
+}
+
+// [i]: サーボID変更（1台のみ接続。IDコマンドにIDがないため oldId は使わない）
+bool apiSetId(int oldId, int newId)
+{
+  (void)oldId;
+  int currentId = readCurrentServoId();
+  if (currentId < 0)
+    return false;
+  return writeServoId(currentId, newId);
+}
+
+// [b]: 通信速度設定。servoToo: false = ESP32だけ, true = ターゲットのEEPROM + ESP32
+bool apiSetBaud(int index, bool servoToo)
+{
+  if (index < 0 || index >= (int)ICS_BAUD_COUNT)
+  {
+    Serial.println("Error: Invalid selection");
+    return false;
+  }
+  u8 baudIndex = index;
+
+  if (!servoToo)
+  {
+    setHostBaudRate(baudIndex);
+    Serial.print("ESP32 baud rate changed to: ");
+    Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
+    Serial.println(" bps");
+    return true;
+  }
+
+  if (!modifyEeprom(targetServoID, applyBaudEdit, &baudIndex))
+    return false;
+
+  // 新しい速度での応答を確認（反映タイミングはマニュアルに記載がないため両方を試す）
+  setHostBaudRate(baudIndex);
+  delay(100);
+  if (icsReadParam(targetServoID, ICS_SC_SPEED) >= 0)
+  {
+    Serial.print("Servo responds at ");
+    Serial.print(ICS_BAUD_RATES[servoBaudIndex]);
+    Serial.println(" bps [OK]");
+  }
+  else
+  {
+    Serial.println("No response at the new baud rate yet. Power-cycle the servo, then use [f].");
+  }
+  return true; // EEPROMは書き込み・照合済み（反映に電源の入れ直しが必要な場合あり）
 }
 
 } // namespace kondo
