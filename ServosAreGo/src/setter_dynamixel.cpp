@@ -1503,15 +1503,15 @@ void loop()
 // ===== サーボ種類の自動判別（起動時のメニュー [0]） =====
 
 // 読み取りコマンドだけでProtocol 2.0 のサーボを探す（サーボは動かない）。
-// defaultBaud: true = 工場出荷時の通信速度だけ, false = それ以外の速度。見つかった通信速度（なければ0）
-unsigned long detect(bool defaultBaud)
+// bauds: 調べる通信速度（速い順に調べる）。見つかった通信速度（なければ0）
+unsigned long detect(DetectBauds bauds)
 {
   const u8 original = servoBaudIndex;
   unsigned long found = 0;
   busBegin(servoSerial, RX1, TX1, PIN_EN, DXL_BAUD_RATES[DEFAULT_BAUD_INDEX], SERIAL_8N1);
   for (int b = DXL_BAUD_COUNT - 1; b >= 0 && found == 0; b--)
   {
-    if ((b == DEFAULT_BAUD_INDEX) != defaultBaud)
+    if (detectSkipsBaud(bauds, b == DEFAULT_BAUD_INDEX, DXL_BAUD_RATES[b]))
       continue;
     setHostBaudRate(b);
     for (int id = 0; id <= DEFAULT_SCAN_MAX_ID; id++)

@@ -1409,15 +1409,15 @@ void loop()
 // ===== サーボ種類の自動判別（起動時のメニュー [0]） =====
 
 // 読み取りコマンドだけでICS のサーボを探す（サーボは動かない）。
-// defaultBaud: true = 工場出荷時の通信速度だけ, false = それ以外の速度。見つかった通信速度（なければ0）
-unsigned long detect(bool defaultBaud)
+// bauds: 調べる通信速度（速い順に調べる）。見つかった通信速度（なければ0）
+unsigned long detect(DetectBauds bauds)
 {
   const u8 original = servoBaudIndex;
   unsigned long found = 0;
   busBegin(servoSerial, RX1, TX1, PIN_EN, ICS_BAUD_RATES[DEFAULT_BAUD_INDEX], ICS_SERIAL_CONFIG, false, false);
   for (int b = ICS_BAUD_COUNT - 1; b >= 0 && found == 0; b--)
   {
-    if ((b == DEFAULT_BAUD_INDEX) != defaultBaud)
+    if (detectSkipsBaud(bauds, b == DEFAULT_BAUD_INDEX, ICS_BAUD_RATES[b]))
       continue;
     setHostBaudRate(b);
     for (int id = ICS_ID_MIN; id <= ICS_ID_MAX; id++)

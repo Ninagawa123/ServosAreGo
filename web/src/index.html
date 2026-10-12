@@ -232,7 +232,8 @@ const I18N = {
     portBusy: "（ポートを開けません。このページを開いている別のタブや、Arduino IDE / PlatformIO のモニターを閉じてから、USB を抜き差ししてください）",
     wiring: "配線", wiring0: "① 半二重回路あり（Meridian Board 等）", wiring1: "② 半二重回路なし（RX・TX 直結）",
     wiringNote: "② では ESP32 の RX（GPIO32）と TX（GPIO27）を両方サーボの信号線につなぎます。受信中は TX の出力を切り、RX の内部プルアップで線を HIGH に保ちます。サーボの信号が 5V のときは ESP32（3.3V）の入力を超えるため、レベル変換などを入れてください。",
-    typeTitle: "サーボの種類", apply: "選ぶ", detect: "自動判別", detectHint: "読み取りだけで調べます（サーボは動きません）",
+    typeTitle: "サーボの種類", apply: "選ぶ", detect: "自動判別", detectHint: "読み取りだけで調べます（サーボは動きません）。種類を選んでいるときは、その種類だけを速い通信速度から調べます",
+    kindAll: "（すべての種類）",
     typeChoose: "サーボの種類を選ぶか、自動判別を押してください。", restarting: "再起動しています…",
     detecting: "自動判別中…", detectedAs: "見つかりました：", detectNone: "見つかりませんでした。配線と電源を確かめるか、手動で選んでください。",
     askPwm: "シリアルサーボは見つかりませんでした。PWM サーボを試しますか？（信号線にPWMを出します。XBUSサーボなどは電源を入れ直すまでPWMモードになります）",
@@ -269,7 +270,8 @@ const I18N = {
     portBusy: "(Cannot open the port. Close other tabs with this page and any Arduino IDE / PlatformIO monitor, then replug the USB cable.)",
     wiring: "Wiring", wiring0: "(1) Half-duplex circuit (Meridian Board etc.)", wiring1: "(2) No circuit (RX + TX direct)",
     wiringNote: "With (2), connect both ESP32 RX (GPIO32) and TX (GPIO27) to the servo signal line. TX is released while receiving, and the RX internal pull-up holds the line HIGH. If the servo signal is 5 V, it exceeds the ESP32 3.3 V input: add a level shifter or similar.",
-    typeTitle: "Servo type", apply: "Select", detect: "Auto detect", detectHint: "Uses read commands only (servos do not move)",
+    typeTitle: "Servo type", apply: "Select", detect: "Auto detect", detectHint: "Uses read commands only (servos do not move). With a type selected, only that type is checked, fastest baud rate first",
+    kindAll: "(All types)",
     typeChoose: "Select the servo type, or press Auto detect.", restarting: "Restarting…",
     detecting: "Detecting…", detectedAs: "Detected: ", detectNone: "No servo detected. Check wiring and power, or select the type manually.",
     askPwm: "No serial servo was found. Try a PWM servo? (PWM is sent on the signal line. XBUS servos and some others stay in PWM mode until power-cycled.)",
@@ -698,9 +700,11 @@ async function doWiring() {
   }
   renderAll();
 }
+// 種類を選んでいれば、その種類だけを速い通信速度から調べる（「すべての種類」なら全種類）
 async function doDetect() {
+  const kind = Number($("kindSelect").value);
   $("detectSteps").innerHTML = "";
-  await run("typeMsg", () => command("detect"));
+  await run("typeMsg", () => command("detect", kind >= 0 ? String(kind) : ""));
   setMsg("typeMsg", t("restarting"), "");
 }
 async function doScan() {
@@ -772,12 +776,21 @@ function renderScan() {
 }
 function renderAll() {
   // 種類の一覧
+  // 先頭の「すべての種類」は自動判別用。選んだ値は、ファームウェアの種類が変わったときだけ合わせる
   const sel = $("kindSelect");
-  if (sel.options.length !== state.kinds.length) {
+  const kindKey = lang + "|" + state.kinds.join("|");
+  if (sel.dataset.key !== kindKey) {
+    const value = sel.value;
     sel.innerHTML = "";
+    sel.add(new Option(t("kindAll"), -1));
     state.kinds.forEach((name, i) => sel.add(new Option((i + 1) + ". " + name, i)));
+    sel.dataset.key = kindKey;
+    if (value !== "") sel.value = value;
   }
-  if (state.kind >= 0 && document.activeElement !== sel) sel.value = state.kind;
+  if (sel.dataset.kind !== String(state.kind) && document.activeElement !== sel) {
+    sel.dataset.kind = state.kind;
+    if (state.kind >= 0) sel.value = state.kind;
+  }
 
   const ready = state.connected && state.fw && !state.busy && state.phase === "connected";
   const running = ready && state.stage === "run" && state.info;
@@ -788,10 +801,10 @@ function renderAll() {
   $("btnConnect").disabled = state.phase === "opening" || state.phase === "flashing";
   $("btnDisconnect").disabled = !state.port;
   $("btnFlash").disabled = state.phase === "opening" || state.phase === "flashing" || state.busy;
-  $("btnSelect").disabled = !(ready && (state.stage === "run" || state.stage === "menu"));
-  $("btnDetect").disabled = $("btnSelect").disabled;
+  $("btnDetect").disabled = !(ready && (state.stage === "run" || state.stage === "menu"));
+  $("btnSelect").disabled = $("btnDetect").disabled || sel.value === "-1";
   const wsel = $("wiringSelect");
-  wsel.disabled = $("btnSelect").disabled || state.wiring === null;
+  wsel.disabled = $("btnDetect").disabled || state.wiring === null;
   if (state.wiring !== null && document.activeElement !== wsel) wsel.value = state.wiring;
   $("wiringNote").classList.toggle("hidden", wsel.value !== "1");
   $("btnSend").disabled = !state.connected;
@@ -857,6 +870,7 @@ function init() {
   $("btnFlash").onclick = flashFirmware;
   $("btnSelect").onclick = doSelect;
   $("btnDetect").onclick = doDetect;
+  $("kindSelect").onchange = renderAll;
   $("wiringSelect").onchange = doWiring;
   $("btnScan").onclick = doScan;
   $("btnTarget").onclick = () => run("scanMsg", () => command("target", $("targetId").value));
