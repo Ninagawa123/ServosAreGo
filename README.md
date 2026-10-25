@@ -57,7 +57,7 @@ ESP32 で、各社のシリアルサーボと PWM サーボの **ID・通信速�
 | 3 | Feetech SCS | SCS0009 など | 1 Mbps | 0〜253 |
 | 4 | Dynamixel | X シリーズなど Protocol 2.0 | 57600 bps | 0〜252 |
 | 5 | Futaba TTL | RS303MR、RS304MD など RS30x | 115200 bps | 1〜127 |
-| 6 | JR XBUS | NX / NXB シリーズなど | 250000 bps 固定 | 1〜50 |
+| 6 | JR XBUS | NX / NXB シリーズなど(信号電圧が3.3Vのためレベル変換の追加を推奨) | 250000 bps 固定 | 1〜50 |
 | 7 | Hitec HSR | HSR-8498HB（HMI） | 19200 bps 固定 | 0〜127 |
 | 8 | Kondo KRS | KRS シリーズ（ICS3.5 / 3.6） | 115200 bps | 0〜31 |
 
