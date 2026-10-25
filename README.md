@@ -17,7 +17,7 @@ ESP32 で、各社のシリアルサーボと PWM サーボの **ID・通信速�
 
 ### 1. ファームウェアを書き込む
 
-1. [`web/ServosAreGo.html`](web/ServosAreGo.html) をダウンロードし、PC の **Chrome または Edge** で開きます（インストール不要。ファームウェアも HTML に入っています）。
+1. このブランチからDLした [`web/ServosAreGo.html`](web/ServosAreGo.html) を、PC の **Chrome** で開きます（インストール不要。ファームウェアも HTML に入っています）。
 2. ESP32（Meridian Board）を USB で PC につなぎ、**① 接続** の「接続」を押してポートを選びます。
 3. **② ファームウェア** の「書き込む」を押します（30 秒ほど）。
    始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離します。
