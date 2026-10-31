@@ -34,6 +34,14 @@ button { font: inherit; padding: 6px 12px; border-radius: 6px; border: 1px solid
 button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
 button.danger { color: var(--err); }
 button:disabled { opacity: .45; cursor: not-allowed; }
+/* 押したときに一瞬アクセント色にする（クリックで .pressed を付け直す）.
+   押すとすぐ処理中で disabled になるボタンが多いので, エフェクト中は薄くしない */
+@keyframes btn-press {
+  0%, 40% { background: var(--accent); color: var(--accent-text); border-color: var(--accent); filter: brightness(1.25); box-shadow: 0 0 0 3px var(--accent); }
+  100% { box-shadow: 0 0 0 0 transparent; }
+}
+button.pressed { animation: btn-press .45s ease-out; }
+button.pressed:disabled { opacity: 1; }
 input, select { font: inherit; padding: 5px 8px; border-radius: 6px; border: 1px solid var(--line); background: var(--panel); color: var(--text); min-width: 0; }
 input[type=number] { width: 80px; }
 input[type=range] { flex: 1; min-width: 160px; }
@@ -946,6 +954,21 @@ function init() {
   });
   autoConnect();
 }
+
+// ===== ボタンを押したときのエフェクト =====
+// 後から作るボタンにも効くよう document でまとめて受ける.
+// ボタン自身の処理で disabled になる前に動くよう capture で受ける
+document.addEventListener("click", (e) => {
+  const button = e.target.closest("button");
+  if (!button || button.disabled) return;
+  button.classList.remove("pressed");
+  void button.offsetWidth; // 連打でもアニメーションを最初からやり直す
+  button.classList.add("pressed");
+}, true);
+document.addEventListener("animationend", (e) => {
+  if (e.animationName === "btn-press") e.target.classList.remove("pressed");
+});
+
 init();
 </script>
 </body>
