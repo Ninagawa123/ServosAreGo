@@ -4,6 +4,8 @@
 
 # ServosAreGo
 
+日本語 | [English](README_en.md)
+
 ESP32 で、各社のシリアルサーボと PWM サーボの **ID・通信速度の変更や動作テスト** ができるツールです。
 ブラウザだけで、ファームウェアの書き込みから操作までできます。
 
@@ -23,6 +25,10 @@ ESP32 で、各社のシリアルサーボと PWM サーボの **ID・通信速�
    始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離します。
 
 「ボードの版」が「このページの版」と同じになれば完了です。次からは接続するだけで使えます。
+ボードのファームウェアが古いときは「ファームウェアをアップデートしてください」と表示されるので、「書き込む」で更新してください。
+
+> [!TIP]
+> ポートが一覧に出ないときは、画面にドライバの入れ方が表示されます。接続できない場合は、**通信可能なUSBケーブル**かご確認ください（充電専用のケーブルでは接続できません）。
 
 ### 2. サーボをつなぐ（Meridian Boardを使用する場合）
 
@@ -99,7 +105,7 @@ TTL レベルの 1 線式サーボが対象です（RS-485 版は対象外）。
 
 | 症状 | 対処 |
 |---|---|
-| 「接続」でポートが出ない | Windows は CP210x / CH340 のドライバを入れる。Ubuntu は `sudo usermod -a -G dialout $USER` のあと再ログイン。Arduino IDE などがポートを使っていたら閉じる |
+| 「接続」でポートが出ない | 通信可能なUSBケーブルか確かめる（充電専用は不可）。Windows はドライバを入れる：CP210x は [Silicon Labs](https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers)、CH340 は [WCH CH341SER](https://www.wch-ic.com/downloads/CH341SER_EXE.html)、CH9102 は [WCH CH343SER](https://www.wch-ic.com/downloads/CH343SER_EXE.html)。Mac は通常不要（必要なら [WCH](https://www.wch-ic.com/downloads/CH34XSER_MAC_ZIP.html)）。Ubuntu は `sudo usermod -a -G dialout $USER` のあと再ログイン。Arduino IDE などがポートを使っていたら閉じる |
 | 自動判別で見つからない | 配線・電源を確かめる。種類を選んで「送信テスト」で動くか確かめる |
 | 送信テストで動くが検索で見つからない | 受信側か通信速度の問題。種類を選んだまま「自動判別」すると、その種類を全速度で調べます |
 | 送信テストでも動かない | 電源・信号線・信号の電圧（5 V / 3.3 V）・配線の設定（①/②）を確かめる。サーボの電源を入れ直す |
