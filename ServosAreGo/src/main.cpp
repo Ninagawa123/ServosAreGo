@@ -2,6 +2,7 @@
 //
 // 起動するとサーボ種類の選択メニューを表示し、選んだ種類の Servo Setter を動かす。
 // [0] を選ぶと、つながっているサーボの種類と通信速度を自動判別する。
+// ブラウザ版で種類を選んで自動判別すると、その種類だけを、すべての通信速度で速い順に調べる。
 // シリアルサーボが見つからなければ、確認したうえでPWMで動かし、動いたかを人に確かめてもらう。
 // 選んだ種類はNVSに保存し、次回は入力がなければ同じ種類で起動する。
 // 動作中は [h] でサーボ種類を選び直せる（選び直すと再起動する）。
@@ -14,7 +15,7 @@
 #include <esp_system.h>
 #include "servo_select.h"
 
-#define FW_VERSION "0.1.0"          // ブラウザ版が書き込み済みの版を確かめるのに使う
+#define FW_VERSION "0.1.3"          // ブラウザ版が書き込み済みの版を確かめるのに使う
 #define SELECT_TIMEOUT 5000          // 前回の種類で自動起動するまでの待ち(ms)
 #define BOOT_MAGIC 0x53415247UL      // 再起動後の動作（bootAction）が有効である目印
 #define NVS_KEY_KIND "type"         // 種類の保存キー（並びを変えたら名前も変え、古い番号を使わない）
@@ -88,7 +89,11 @@ const ServoKind SERVO_KINDS[] = {
 
 // 自動判別の手順。kind に見つかった種類を入れ、見つかった通信速度を返す（なければ0）
 // 位置指令にチェックサムがない ICS（近藤）を最初に調べ、他のプロトコルの送信で誤って動かないようにする。
-// 次に各種類を工場出荷時の速度で調べ、最後にそれ以外の速度を調べる
+// 次に各種類を工場出荷時の速度で調べ、そのあとでそれ以外の速度を調べる。
+// PWMを先に受けるとPWMモードに固定されるサーボ（Kondo / XBUS / Hitec / Futaba）があるため、
+// PWMに似た信号を出す手順は最後に、似かたの弱い順に並べる:
+//   Hitec（反転信号: 0x00 / 0x80 で 0.42-0.47ms のHIGH）
+//   → 19200bps 以下（データのHIGHが最大 0.47-0.94ms。DETECT_PWM_LIKE_MAX_BAUD）
 struct DetectStep
 {
   const char *label;
@@ -97,37 +102,70 @@ struct DetectStep
 
 const DetectStep DETECT_STEPS[] = {
     {"Kondo KRS        115200 bps",
-     [](int *kind) { *kind = KIND_KONDO; return kondo::detect(true); }},
+     [](int *kind) { *kind = KIND_KONDO; return kondo::detect(DETECT_DEFAULT_BAUD); }},
     {"Kondo KRS        other baud rates",
-     [](int *kind) { *kind = KIND_KONDO; return kondo::detect(false); }},
+     [](int *kind) { *kind = KIND_KONDO; return kondo::detect(DETECT_OTHER_FAST_BAUDS); }},
     {"Feetech STS/SCS  1000000 bps",
      [](int *kind) {
        uint8_t series;
-       unsigned long baud = feetech::detect(true, &series);
+       unsigned long baud = feetech::detect(DETECT_DEFAULT_BAUD, &series);
        *kind = series ? KIND_FEETECH_SCS : KIND_FEETECH_STS;
        return baud;
      }},
     {"Dynamixel        57600 bps",
-     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(true); }},
+     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(DETECT_DEFAULT_BAUD); }},
     {"Futaba TTL       115200 bps",
-     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(true); }},
+     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(DETECT_DEFAULT_BAUD); }},
+    {"JR XBUS          250000 bps",
+     [](int *kind) { *kind = KIND_JR_XBUS; return jrxbus::detect() ? 250000UL : 0UL; }},
+    {"Feetech STS/SCS  other baud rates",
+     [](int *kind) {
+       uint8_t series;
+       unsigned long baud = feetech::detect(DETECT_OTHER_FAST_BAUDS, &series);
+       *kind = series ? KIND_FEETECH_SCS : KIND_FEETECH_STS;
+       return baud;
+     }},
+    {"Dynamixel        other baud rates (>= 115200 bps)",
+     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(DETECT_OTHER_FAST_BAUDS); }},
+    {"Futaba TTL       other baud rates (>= 28800 bps)",
+     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(DETECT_OTHER_FAST_BAUDS); }},
+    // ここから PWM に似た信号を出す手順
+    {"Hitec HSR        19200 bps",
+     [](int *kind) { *kind = KIND_HITEC; return hitec::detect() ? 19200UL : 0UL; }},
+    {"Futaba TTL       19200 / 14400 / 9600 bps",
+     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(DETECT_PWM_LIKE_BAUDS); }},
+    {"Dynamixel        9600 bps",
+     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(DETECT_PWM_LIKE_BAUDS); }},
+};
+#define DETECT_STEP_COUNT (sizeof(DETECT_STEPS) / sizeof(DETECT_STEPS[0]))
+
+// 種類を指定した自動判別の手順（SERVO_KINDS の並び）。その種類のすべての通信速度を速い順に調べる。
+// PWM は返信がないため probe は NULL（tryPwmServo() で確かめる）
+static unsigned long probeFeetechAll(int *kind)
+{
+  uint8_t series;
+  unsigned long baud = feetech::detect(DETECT_ALL_BAUDS, &series);
+  *kind = series ? KIND_FEETECH_SCS : KIND_FEETECH_STS; // 選んだ系列と違っても、読めた系列で始める
+  return baud;
+}
+
+const DetectStep KIND_DETECT_STEPS[] = {
+    {"PWM servo", NULL},
+    {"Feetech STS/SCS  all baud rates", probeFeetechAll},
+    {"Feetech STS/SCS  all baud rates", probeFeetechAll},
+    {"Dynamixel        all baud rates",
+     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(DETECT_ALL_BAUDS); }},
+    {"Futaba TTL       all baud rates",
+     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(DETECT_ALL_BAUDS); }},
     {"JR XBUS          250000 bps",
      [](int *kind) { *kind = KIND_JR_XBUS; return jrxbus::detect() ? 250000UL : 0UL; }},
     {"Hitec HSR        19200 bps",
      [](int *kind) { *kind = KIND_HITEC; return hitec::detect() ? 19200UL : 0UL; }},
-    {"Feetech STS/SCS  other baud rates",
-     [](int *kind) {
-       uint8_t series;
-       unsigned long baud = feetech::detect(false, &series);
-       *kind = series ? KIND_FEETECH_SCS : KIND_FEETECH_STS;
-       return baud;
-     }},
-    {"Dynamixel        other baud rates",
-     [](int *kind) { *kind = KIND_DYNAMIXEL; return dynamixel::detect(false); }},
-    {"Futaba TTL       other baud rates",
-     [](int *kind) { *kind = KIND_FUTABA; return futaba::detect(false); }},
+    {"Kondo KRS        all baud rates",
+     [](int *kind) { *kind = KIND_KONDO; return kondo::detect(DETECT_ALL_BAUDS); }},
 };
-#define DETECT_STEP_COUNT (sizeof(DETECT_STEPS) / sizeof(DETECT_STEPS[0]))
+static_assert(sizeof(KIND_DETECT_STEPS) / sizeof(KIND_DETECT_STEPS[0]) == SERVO_KIND_COUNT,
+              "KIND_DETECT_STEPS must match SERVO_KINDS");
 
 // 再起動後の動作（ソフトウェア再起動をまたいで残る）
 enum BootAction : uint32_t
@@ -139,8 +177,10 @@ enum BootAction : uint32_t
 RTC_NOINIT_ATTR static uint32_t bootMagic;
 RTC_NOINIT_ATTR static uint32_t bootAction;
 RTC_NOINIT_ATTR static uint32_t bootBaud; // BOOT_START_SAVED で使う通信速度（0: 種類の初期値）
+RTC_NOINIT_ATTR static int32_t bootDetectKind; // BOOT_DETECT で調べる種類（-1: すべて）
 
 static int activeKind = -1; // 動作中のサーボ種類
+static int detectOnlyKind = -1; // 自動判別で調べる種類（-1: すべて。ブラウザの @detect <kind> で指定）
 bool busDirectWiring = false; // 配線 true: ② 半二重回路なし（servo_bus.h が参照する）
 static bool startWiring;      // 起動時の配線（変わったら再起動して反映する）
 
@@ -309,6 +349,7 @@ static void replyResult(const String &cmd, bool ok)
 // 再起動後の動作を残して再起動する
 static void restartWith(BootAction action, unsigned long baud)
 {
+  bootDetectKind = detectOnlyKind;
   printEvent("restart");
   Serial.println("Restarting...");
   Serial.flush();
@@ -346,23 +387,32 @@ static bool tryPwmServo()
   return moved;
 }
 
-// つながっているサーボの種類と通信速度を自動判別する。見つからなければ-1
-static int detectServoKind(unsigned long *baud)
+// つながっているサーボの種類と通信速度を自動判別する。見つからなければ-1。
+// onlyKind >= 0 なら、その種類だけをすべての通信速度で速い順に調べる
+static int detectServoKind(unsigned long *baud, int onlyKind)
 {
+  const DetectStep *steps = onlyKind >= 0 ? &KIND_DETECT_STEPS[onlyKind] : DETECT_STEPS;
+  size_t stepCount = onlyKind < 0 ? DETECT_STEP_COUNT : (steps->probe ? 1 : 0);
+
   Serial.println("============================================");
   Serial.println("Detecting servo type (read commands only, servos do not move)...");
+  if (onlyKind >= 0)
+  {
+    Serial.print("Selected type only: ");
+    Serial.println(SERVO_KINDS[onlyKind].name);
+  }
   Serial.println("Scan range: ID0-31 (Kondo), ID0-20 (Feetech/Dynamixel), ID1-20 (Futaba/XBUS)");
-  printEvent("detecting", ",\"steps\":" + String(DETECT_STEP_COUNT));
+  printEvent("detecting", ",\"steps\":" + String(stepCount));
 
   int found = -1;
-  for (size_t i = 0; i < DETECT_STEP_COUNT && found < 0; i++)
+  for (size_t i = 0; i < stepCount && found < 0; i++)
   {
     Serial.print("  ");
-    Serial.print(DETECT_STEPS[i].label);
+    Serial.print(steps[i].label);
     Serial.print(" ... ");
 
     int kind;
-    unsigned long foundBaud = DETECT_STEPS[i].probe(&kind);
+    unsigned long foundBaud = steps[i].probe(&kind);
     releaseServoBus();
 
     if (foundBaud > 0)
@@ -375,14 +425,15 @@ static int detectServoKind(unsigned long *baud)
     {
       Serial.println("-");
     }
-    printEvent("detectstep", ",\"step\":" + String(i) + ",\"label\":\"" + DETECT_STEPS[i].label + "\",\"found\":" +
+    printEvent("detectstep", ",\"step\":" + String(i) + ",\"label\":\"" + steps[i].label + "\",\"found\":" +
                                  String(foundBaud > 0 ? "true" : "false"));
   }
 
   if (found < 0)
   {
     Serial.println("No serial servo detected. (Hitec reads need only ONE servo on the bus.)");
-    if (tryPwmServo())
+    // シリアルサーボの種類を指定したときは、PWM は試さない
+    if ((onlyKind < 0 || onlyKind == KIND_PWM) && tryPwmServo())
     {
       *baud = 0;
       printEvent("detected", ",\"kind\":" + String(KIND_PWM) + ",\"baud\":0");
@@ -400,6 +451,16 @@ static int detectServoKind(unsigned long *baud)
   Serial.println(" bps");
   printEvent("detected", ",\"kind\":" + String(found) + ",\"baud\":" + String(*baud));
   return found;
+}
+
+// @detect の引数（空: すべての種類, 番号: その種類だけ）を detectOnlyKind に入れる。不正なら false
+static bool setDetectOnlyKind(const String &arg)
+{
+  int kind = arg.length() > 0 ? arg.toInt() : -1;
+  if (kind < -1 || kind >= (int)SERVO_KIND_COUNT)
+    return false;
+  detectOnlyKind = kind;
+  return true;
 }
 
 // 起動メニューでのブラウザのコマンド。選ばれた種類（KIND_DETECT 含む）か、続けて待つなら KIND_NONE を返す
@@ -425,8 +486,9 @@ static int handleMenuApi(const String &line, int defaultKind)
   }
   if (cmd == "detect")
   {
-    replyResult(cmd, true);
-    return KIND_DETECT;
+    bool ok = setDetectOnlyKind(arg);
+    replyResult(cmd, ok);
+    return ok ? KIND_DETECT : KIND_NONE;
   }
   if (cmd == "wiring")
   {
@@ -506,7 +568,10 @@ static int askServoKind(int defaultKind, unsigned long timeoutMs)
     if (input.length() == 0 && defaultKind >= 0)
       return defaultKind;
     if (input == "0")
+    {
+      detectOnlyKind = -1; // テキストメニューの [0] はすべての種類を調べる
       return KIND_DETECT;
+    }
     if (input == "w")
     {
       setWiring(!busDirectWiring);
@@ -551,7 +616,7 @@ void selectServoTypeAndRestart()
 //
 // @hello / @info                  版数と今の状態
 // @select <kind>                  種類を選んで再起動（kind = メニューの番号 - 1）
-// @detect                         再起動して自動判別
+// @detect [kind]                  再起動して自動判別（kind を指定するとその種類だけ、速い通信速度から）
 // @scan [maxId]                   今の通信速度で検索（ターゲットと一斉制御リストも設定）
 // @target <id> / @sync <id,id,..> ターゲットID / 一斉制御リスト
 // @move <deg> / @center           一斉制御リストを角度へ / 中央へ
@@ -593,8 +658,10 @@ void handleApiCommand(const String &line)
   }
   else if (cmd == "detect")
   {
-    replyResult(cmd, true);
-    restartWith(BOOT_DETECT, 0);
+    bool ok = setDetectOnlyKind(arg);
+    replyResult(cmd, ok);
+    if (ok)
+      restartWith(BOOT_DETECT, 0);
   }
   else if (cmd == "wiring")
   {
@@ -700,6 +767,8 @@ void setup()
   {
     action = (BootAction)bootAction;
     baud = bootBaud;
+    if (action == BOOT_DETECT && bootDetectKind >= -1 && bootDetectKind < (int)SERVO_KIND_COUNT)
+      detectOnlyKind = bootDetectKind;
   }
   bootMagic = 0;
 
@@ -719,7 +788,7 @@ void setup()
   // 自動判別（見つからなければ手動で選ぶ）
   while (kind == KIND_DETECT)
   {
-    kind = detectServoKind(&baud);
+    kind = detectServoKind(&baud, detectOnlyKind);
     if (kind < 0)
       kind = askServoKind(savedKind, 0);
   }

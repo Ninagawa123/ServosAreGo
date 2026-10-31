@@ -55,6 +55,7 @@ dialog { border: 1px solid var(--line); border-radius: 10px; background: var(--p
 dialog::backdrop { background: rgba(0,0,0,.45); }
 .kv { display: grid; grid-template-columns: auto 1fr; gap: 2px 12px; font-size: 13px; }
 .kv b { font-weight: 600; color: var(--muted); }
+.msg a { color: var(--accent); }
 details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
 @media (max-width: 480px) { main { padding: 12px; } header img { height: 40px; } }
 </style>
@@ -81,8 +82,9 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       <button id="btnConnect" class="primary" data-i18n="connect"></button>
       <button id="btnDisconnect" data-i18n="disconnect" disabled></button>
     </div>
+    <div id="noPort" class="msg warn hidden"></div>
     <p class="muted" data-i18n="connHint"></p>
-    <details><summary data-i18n="osHelpTitle"></summary><div class="muted" data-i18n-html="osHelp"></div></details>
+    <details id="osHelpBox"><summary data-i18n="osHelpTitle"></summary><div class="muted" data-i18n-html="osHelp"></div></details>
   </section>
 
   <!-- 2. ファームウェア -->
@@ -116,7 +118,7 @@ details summary { cursor: pointer; color: var(--muted); font-size: 12px; }
       <button id="btnSelect" class="primary" data-i18n="apply" disabled></button>
     </div>
     <div class="row">
-      <button id="btnDetect" data-i18n="detect" disabled></button>
+      <button id="btnDetect" class="primary" data-i18n="detect" disabled></button>
       <span class="muted" data-i18n="detectHint"></span>
     </div>
     <div id="typeMsg" class="msg hidden"></div>
@@ -218,21 +220,28 @@ const I18N = {
   ja: {
     unsupported: "このブラウザは Web Serial に対応していません。Chrome または Edge（PC版）で開いてください。",
     connTitle: "接続", connect: "接続", disconnect: "切断",
-    connHint: "ESP32 をUSBでつなぎ「接続」を押してください。ESP32系のUSBチップ（CP210x / CH340 / FTDI / ESP32内蔵）だけが一覧に出ます。一度許可したポートには、次から自動でつながります。",
+    connHint: "ESP32 をUSBでつなぎ「接続」を押してください。ESP32系のUSBチップ（CP210x / CH340 / FTDI / ESP32内蔵）だけが一覧に出ます。一度許可したポートには、次から自動でつながります。接続できない場合は、通信可能なUSBケーブルかご確認ください。",
     osHelpTitle: "つながらないとき（Windows / Mac / Ubuntu）",
-    osHelp: "<b>Windows</b>：CP210x / CH340 のドライバを入れてください。<br><b>Mac</b>：多くは追加のドライバ不要です（CH340 の古い機種はドライバが必要）。<br><b>Ubuntu</b>：<code>sudo usermod -a -G dialout $USER</code> を実行し、ログインし直してください。Snap版の Chromium では <code>sudo snap connect chromium:raw-usb</code> も必要です。<br>他のソフト（Arduino IDE / PlatformIO のモニターなど）がポートを使っていると開けません。",
+    osHelp: "<b>USBケーブル</b>：通信可能なケーブルかご確認ください（充電専用のケーブルでは接続できません）。<br><b>Windows</b>：USBチップのドライバを入れてください（CP210x：<a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>Silicon Labs</a> / CH340：<a href='https://www.wch-ic.com/downloads/CH341SER_EXE.html' target='_blank' rel='noopener'>WCH CH341SER</a> / CH9102：<a href='https://www.wch-ic.com/downloads/CH343SER_EXE.html' target='_blank' rel='noopener'>WCH CH343SER</a>）。<br><b>Mac</b>：多くは追加のドライバ不要です（CH340 の古い機種はドライバが必要）。<br><b>Ubuntu</b>：<code>sudo usermod -a -G dialout $USER</code> を実行し、ログインし直してください。Snap版の Chromium では <code>sudo snap connect chromium:raw-usb</code> も必要です。<br>他のソフト（Arduino IDE / PlatformIO のモニターなど）がポートを使っていると開けません。",
+    noPortHead: "<b>ESP32 のポートが見つかりませんでした。</b>一覧に何も出なかったときは、次を確かめてください。",
+    noPortWin: "Windows では、ボードのUSBチップに合ったドライバが必要です。入れたあと、USBを抜き差ししてください。<br>・CP210x（Silicon Labs）：<a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>silabs.com のドライバ</a>（「CP210x Universal Windows Driver」）<br>・CH340（WCH）：<a href='https://www.wch-ic.com/downloads/CH341SER_EXE.html' target='_blank' rel='noopener'>wch-ic.com のドライバ</a>（CH341SER.EXE）<br>・CH9102（WCH）：<a href='https://www.wch-ic.com/downloads/CH343SER_EXE.html' target='_blank' rel='noopener'>wch-ic.com のドライバ</a>（CH343SER.EXE）<br>チップ名は、ボードのUSB端子の近くにある小さなICに書かれています。",
+    noPortMac: "Mac では、多くの場合ドライバは不要です。古い CH340 のボードなどで見つからないときだけ、ドライバを入れてください。<br>・CH340 / CH9102（WCH）：<a href='https://www.wch-ic.com/downloads/CH34XSER_MAC_ZIP.html' target='_blank' rel='noopener'>wch-ic.com のドライバ</a><br>・CP210x（Silicon Labs）：<a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>silabs.com のドライバ</a>",
+    noPortLinux: "Ubuntu ではドライバは不要です。<code>sudo usermod -a -G dialout $USER</code> を実行し、ログインし直してください。Snap版の Chromium では <code>sudo snap connect chromium:raw-usb</code> も必要です。",
+    noPortCable: "<b>接続できない場合は、通信可能なUSBケーブルかご確認ください。</b>充電専用のケーブルでは、ポートが一覧に出ません。",
     stNone: "未接続", stOpening: "接続中…", stConnected: "接続済み", stNoFw: "ファームウェアなし", stFlashing: "書き込み中…",
     fwTitle: "ファームウェア", fwEmbedded: "このページの版", fwBoard: "ボードの版", flash: "書き込む",
     flashHint: "書き込みには30秒ほどかかります。始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離してください。",
     fwNone: "ServosAreGo が見つかりません。「書き込む」でファームウェアを書き込んでください。",
-    fwOld: "ボードの版がこのページと違います。「書き込む」で更新できます。",
+    fwOld: "古いファームウェア（{board}）が見つかりました。ファームウェアをアップデートしてください。「書き込む」を押すと {page} に更新できます。",
+    fwNewer: "ボードの版（{board}）は、このページ（{page}）より新しい版です。",
     fwOk: "最新のファームウェアです。",
     flashConfirm: "ESP32 に ServosAreGo を書き込みます。よろしいですか？",
     flashDone: "書き込みが終わりました。起動を待っています…", flashFail: "書き込みに失敗しました：",
     portBusy: "（ポートを開けません。このページを開いている別のタブや、Arduino IDE / PlatformIO のモニターを閉じてから、USB を抜き差ししてください）",
     wiring: "配線", wiring0: "① 半二重回路あり（Meridian Board 等）", wiring1: "② 半二重回路なし（RX・TX 直結）",
     wiringNote: "② では ESP32 の RX（GPIO32）と TX（GPIO27）を両方サーボの信号線につなぎます。受信中は TX の出力を切り、RX の内部プルアップで線を HIGH に保ちます。サーボの信号が 5V のときは ESP32（3.3V）の入力を超えるため、レベル変換などを入れてください。",
-    typeTitle: "サーボの種類", apply: "選ぶ", detect: "自動判別", detectHint: "読み取りだけで調べます（サーボは動きません）",
+    typeTitle: "サーボの種類", apply: "選ぶ", detect: "自動判別", detectHint: "読み取りだけで調べます（サーボは動きません）。種類を選んでいるときは、その種類だけを速い通信速度から調べます",
+    kindAll: "（すべての種類）",
     typeChoose: "サーボの種類を選ぶか、自動判別を押してください。", restarting: "再起動しています…",
     detecting: "自動判別中…", detectedAs: "見つかりました：", detectNone: "見つかりませんでした。配線と電源を確かめるか、手動で選んでください。",
     askPwm: "シリアルサーボは見つかりませんでした。PWM サーボを試しますか？（信号線にPWMを出します。XBUSサーボなどは電源を入れ直すまでPWMモードになります）",
@@ -255,21 +264,28 @@ const I18N = {
   en: {
     unsupported: "This browser does not support Web Serial. Please open this page in desktop Chrome or Edge.",
     connTitle: "Connect", connect: "Connect", disconnect: "Disconnect",
-    connHint: "Connect the ESP32 by USB and press Connect. Only ESP32-type USB chips (CP210x / CH340 / FTDI / ESP32 native) are listed. Ports you allowed once are connected automatically next time.",
+    connHint: "Connect the ESP32 by USB and press Connect. Only ESP32-type USB chips (CP210x / CH340 / FTDI / ESP32 native) are listed. Ports you allowed once are connected automatically next time. If you cannot connect, make sure the USB cable supports data.",
     osHelpTitle: "Cannot connect? (Windows / Mac / Ubuntu)",
-    osHelp: "<b>Windows</b>: install the CP210x / CH340 driver.<br><b>Mac</b>: usually no driver is needed (old CH340 boards need one).<br><b>Ubuntu</b>: run <code>sudo usermod -a -G dialout $USER</code> and log in again. For Snap Chromium also run <code>sudo snap connect chromium:raw-usb</code>.<br>The port cannot be opened while another program (Arduino IDE, PlatformIO monitor, ...) uses it.",
+    osHelp: "<b>USB cable</b>: make sure the cable supports data (charge-only cables cannot connect).<br><b>Windows</b>: install the USB chip driver (CP210x: <a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>Silicon Labs</a> / CH340: <a href='https://www.wch-ic.com/downloads/CH341SER_EXE.html' target='_blank' rel='noopener'>WCH CH341SER</a> / CH9102: <a href='https://www.wch-ic.com/downloads/CH343SER_EXE.html' target='_blank' rel='noopener'>WCH CH343SER</a>).<br><b>Mac</b>: usually no driver is needed (old CH340 boards need one).<br><b>Ubuntu</b>: run <code>sudo usermod -a -G dialout $USER</code> and log in again. For Snap Chromium also run <code>sudo snap connect chromium:raw-usb</code>.<br>The port cannot be opened while another program (Arduino IDE, PlatformIO monitor, ...) uses it.",
+    noPortHead: "<b>No ESP32 port was found.</b> If the list was empty, check the following.",
+    noPortWin: "Windows needs a driver for the USB chip on your board. Install it, then replug the USB cable.<br>- CP210x (Silicon Labs): <a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>driver at silabs.com</a> (\"CP210x Universal Windows Driver\")<br>- CH340 (WCH): <a href='https://www.wch-ic.com/downloads/CH341SER_EXE.html' target='_blank' rel='noopener'>driver at wch-ic.com</a> (CH341SER.EXE)<br>- CH9102 (WCH): <a href='https://www.wch-ic.com/downloads/CH343SER_EXE.html' target='_blank' rel='noopener'>driver at wch-ic.com</a> (CH343SER.EXE)<br>The chip name is printed on the small IC near the USB connector.",
+    noPortMac: "On Mac a driver is usually not needed. Install one only if the port is not found (e.g. old CH340 boards).<br>- CH340 / CH9102 (WCH): <a href='https://www.wch-ic.com/downloads/CH34XSER_MAC_ZIP.html' target='_blank' rel='noopener'>driver at wch-ic.com</a><br>- CP210x (Silicon Labs): <a href='https://www.silabs.com/developer-tools/usb-to-uart-bridge-vcp-drivers' target='_blank' rel='noopener'>driver at silabs.com</a>",
+    noPortLinux: "Ubuntu needs no driver. Run <code>sudo usermod -a -G dialout $USER</code> and log in again. For Snap Chromium also run <code>sudo snap connect chromium:raw-usb</code>.",
+    noPortCable: "<b>If you cannot connect, make sure the USB cable supports data.</b> Ports do not appear with charge-only cables.",
     stNone: "Not connected", stOpening: "Connecting…", stConnected: "Connected", stNoFw: "No firmware", stFlashing: "Flashing…",
     fwTitle: "Firmware", fwEmbedded: "This page", fwBoard: "Board", flash: "Flash",
     flashHint: "Flashing takes about 30 s. If it does not start, hold the BOOT button on the board, press Flash, and release when writing starts.",
     fwNone: "ServosAreGo was not found. Press Flash to write the firmware.",
-    fwOld: "The board firmware differs from this page. Press Flash to update.",
+    fwOld: "Old firmware ({board}) was found. Please update the firmware. Press Flash to update to {page}.",
+    fwNewer: "The board firmware ({board}) is newer than this page ({page}).",
     fwOk: "Firmware is up to date.",
     flashConfirm: "Write ServosAreGo to the ESP32?",
     flashDone: "Flashing finished. Waiting for the board to start…", flashFail: "Flashing failed: ",
     portBusy: "(Cannot open the port. Close other tabs with this page and any Arduino IDE / PlatformIO monitor, then replug the USB cable.)",
     wiring: "Wiring", wiring0: "(1) Half-duplex circuit (Meridian Board etc.)", wiring1: "(2) No circuit (RX + TX direct)",
     wiringNote: "With (2), connect both ESP32 RX (GPIO32) and TX (GPIO27) to the servo signal line. TX is released while receiving, and the RX internal pull-up holds the line HIGH. If the servo signal is 5 V, it exceeds the ESP32 3.3 V input: add a level shifter or similar.",
-    typeTitle: "Servo type", apply: "Select", detect: "Auto detect", detectHint: "Uses read commands only (servos do not move)",
+    typeTitle: "Servo type", apply: "Select", detect: "Auto detect", detectHint: "Uses read commands only (servos do not move). With a type selected, only that type is checked, fastest baud rate first",
+    kindAll: "(All types)",
     typeChoose: "Select the servo type, or press Auto detect.", restarting: "Restarting…",
     detecting: "Detecting…", detectedAs: "Detected: ", detectNone: "No servo detected. Check wiring and power, or select the type manually.",
     askPwm: "No serial servo was found. Try a PWM servo? (PWM is sent on the signal line. XBUS servos and some others stay in PWM mode until power-cycled.)",
@@ -304,6 +320,7 @@ function applyLang() {
   document.querySelectorAll("[data-i18n-html]").forEach(el => el.innerHTML = t(el.dataset.i18nHtml));
   document.querySelectorAll("[data-i18n-ph]").forEach(el => el.placeholder = t(el.dataset.i18nPh));
   $("lang").value = lang;
+  renderNoPort();
   renderConn();
   renderAll();
 }
@@ -531,6 +548,7 @@ async function resetBoard() {
 
 async function connectFlow(port) {
   if (state.phase === "opening" || state.phase === "flashing") return;
+  showNoPort(false);
   setPhase("opening");
   try {
     if (state.port && state.port !== port) await closePort();
@@ -561,9 +579,22 @@ async function connectFlow(port) {
   renderAll();
 }
 
+// "0.1.2" と "0.1.3" のような版を数値で比べる（版が分からないものは古い扱い）
+function compareVersion(a, b) {
+  const pa = String(a || "0").split(".").map(n => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(".").map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
 function checkFirmwareVersion() {
   if (!state.fw) return;
-  if (state.fw.ver !== EMBEDDED_VERSION) setMsg("fwMsg", t("fwOld"), "warn");
+  const vars = { board: state.fw.ver || "?", page: EMBEDDED_VERSION };
+  const cmp = compareVersion(state.fw.ver, EMBEDDED_VERSION);
+  if (cmp < 0) setMsg("fwMsg", t("fwOld", vars), "warn");
+  else if (cmp > 0) setMsg("fwMsg", t("fwNewer", vars), "warn");
   else setMsg("fwMsg", t("fwOk"), "ok");
   if (state.phase === "nofw") setPhase("connected");
 }
@@ -573,7 +604,8 @@ async function onConnectClick() {
     const port = await navigator.serial.requestPort({ filters: PORT_FILTERS });
     await connectFlow(port);
   } catch (e) {
-    if (e.name !== "NotFoundError") sys(e.message);
+    if (e.name === "NotFoundError") showNoPort(true);
+    else sys(e.message);
   }
 }
 
@@ -604,6 +636,19 @@ function isEspPort(port) {
   return info.usbVendorId === undefined || USB_CHIPS[info.usbVendorId] !== undefined;
 }
 
+// ポートが選ばれなかったとき、OS に合わせてドライバの入れ方を案内する
+let noPortShown = false;
+function osKind() {
+  const p = (navigator.userAgentData && navigator.userAgentData.platform) || navigator.platform || "";
+  return /mac/i.test(p) ? "Mac" : /linux/i.test(p) ? "Linux" : "Win";
+}
+function showNoPort(show) { noPortShown = show; renderNoPort(); }
+function renderNoPort() {
+  const el = $("noPort");
+  el.classList.toggle("hidden", !noPortShown);
+  if (noPortShown) el.innerHTML = t("noPortHead") + "<br>" + t("noPort" + osKind()) + "<br>" + t("noPortCable");
+}
+
 // ===== 書き込み =====
 let esptoolModule = null;
 async function loadEsptool() {
@@ -623,7 +668,7 @@ async function flashFirmware() {
   if (!(await ask(t("flashConfirm"), t("yes"), t("cancel")))) return;
   let port = state.port;
   if (!port) {
-    try { port = await navigator.serial.requestPort({ filters: PORT_FILTERS }); } catch (e) { return; }
+    try { port = await navigator.serial.requestPort({ filters: PORT_FILTERS }); } catch (e) { if (e.name === "NotFoundError") showNoPort(true); return; }
   }
   await closePort();
   retryOpen(port);
@@ -698,9 +743,11 @@ async function doWiring() {
   }
   renderAll();
 }
+// 種類を選んでいれば、その種類だけを速い通信速度から調べる（「すべての種類」なら全種類）
 async function doDetect() {
+  const kind = Number($("kindSelect").value);
   $("detectSteps").innerHTML = "";
-  await run("typeMsg", () => command("detect"));
+  await run("typeMsg", () => command("detect", kind >= 0 ? String(kind) : ""));
   setMsg("typeMsg", t("restarting"), "");
 }
 async function doScan() {
@@ -772,12 +819,21 @@ function renderScan() {
 }
 function renderAll() {
   // 種類の一覧
+  // 先頭の「すべての種類」は自動判別用。選んだ値は、ファームウェアの種類が変わったときだけ合わせる
   const sel = $("kindSelect");
-  if (sel.options.length !== state.kinds.length) {
+  const kindKey = lang + "|" + state.kinds.join("|");
+  if (sel.dataset.key !== kindKey) {
+    const value = sel.value;
     sel.innerHTML = "";
+    sel.add(new Option(t("kindAll"), -1));
     state.kinds.forEach((name, i) => sel.add(new Option((i + 1) + ". " + name, i)));
+    sel.dataset.key = kindKey;
+    if (value !== "") sel.value = value;
   }
-  if (state.kind >= 0 && document.activeElement !== sel) sel.value = state.kind;
+  if (sel.dataset.kind !== String(state.kind) && document.activeElement !== sel) {
+    sel.dataset.kind = state.kind;
+    if (state.kind >= 0) sel.value = state.kind;
+  }
 
   const ready = state.connected && state.fw && !state.busy && state.phase === "connected";
   const running = ready && state.stage === "run" && state.info;
@@ -788,10 +844,10 @@ function renderAll() {
   $("btnConnect").disabled = state.phase === "opening" || state.phase === "flashing";
   $("btnDisconnect").disabled = !state.port;
   $("btnFlash").disabled = state.phase === "opening" || state.phase === "flashing" || state.busy;
-  $("btnSelect").disabled = !(ready && (state.stage === "run" || state.stage === "menu"));
-  $("btnDetect").disabled = $("btnSelect").disabled;
+  $("btnDetect").disabled = !(ready && (state.stage === "run" || state.stage === "menu"));
+  $("btnSelect").disabled = $("btnDetect").disabled || sel.value === "-1";
   const wsel = $("wiringSelect");
-  wsel.disabled = $("btnSelect").disabled || state.wiring === null;
+  wsel.disabled = $("btnDetect").disabled || state.wiring === null;
   if (state.wiring !== null && document.activeElement !== wsel) wsel.value = state.wiring;
   $("wiringNote").classList.toggle("hidden", wsel.value !== "1");
   $("btnSend").disabled = !state.connected;
@@ -857,6 +913,7 @@ function init() {
   $("btnFlash").onclick = flashFirmware;
   $("btnSelect").onclick = doSelect;
   $("btnDetect").onclick = doDetect;
+  $("kindSelect").onchange = renderAll;
   $("wiringSelect").onchange = doWiring;
   $("btnScan").onclick = doScan;
   $("btnTarget").onclick = () => run("scanMsg", () => command("target", $("targetId").value));

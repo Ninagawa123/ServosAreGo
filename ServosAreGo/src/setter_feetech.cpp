@@ -1643,16 +1643,16 @@ void loop()
 
 // 読み取りコマンドだけでSTS / SCS のサーボを探す（サーボは動かない）。
 // 系列（STS / SCS）はアドレス2（END）の値で判定する。
-// defaultBaud: true = 工場出荷時の通信速度だけ, false = それ以外の速度。見つかった通信速度（なければ0）
-unsigned long detect(bool defaultBaud, u8 *series)
+// bauds: 調べる通信速度（速い順に調べる）。見つかった通信速度（なければ0）
+unsigned long detect(DetectBauds bauds, u8 *series)
 {
   u8 endValue = SERVO_TYPE_STS;
   const u8 original = servoBaudIndex;
   unsigned long found = 0;
   busBegin(servoSerial, RX1, TX1, PIN_EN, STS_BAUD_RATES[DEFAULT_BAUD_INDEX], SERIAL_8N1);
-  for (int b = STS_BAUD_COUNT - 1; b >= 0 && found == 0; b--)
+  for (int b = 0; b < (int)STS_BAUD_COUNT && found == 0; b++) // STS_BAUD_RATES は速い順
   {
-    if ((b == DEFAULT_BAUD_INDEX) != defaultBaud)
+    if (detectSkipsBaud(bauds, b == DEFAULT_BAUD_INDEX, STS_BAUD_RATES[b]))
       continue;
     setHostBaudRate(b);
     for (int id = 0; id <= DEFAULT_SCAN_MAX_ID; id++)

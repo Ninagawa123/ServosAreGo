@@ -66,12 +66,42 @@ struct ApiInfo
 // 各種類の detect() は読み取りコマンドだけでサーボを探す（サーボは動かない）。
 // 通信速度を探す種類は、見つかった速度を返し（なければ0）、presetBaud() でその速度から始められる
 
+// これ以下の通信速度は、データの連続したHIGH（最大 スタート後の8ビット+ストップ = 9ビット）が
+// 0.47ms以上になり、PWMのパルスに似る（9600bps: 0.94ms）。PWMを先に受けるとPWMモードに固定される
+// サーボ（Kondo / XBUS / Hitec / Futaba）があるため、全種類の自動判別では最後に調べる
+#define DETECT_PWM_LIKE_MAX_BAUD 19200UL
+
+// detect() で調べる通信速度（どれも速い順に調べる）
+enum DetectBauds
+{
+  DETECT_DEFAULT_BAUD,     // 工場出荷時の速度だけ
+  DETECT_OTHER_FAST_BAUDS, // それ以外で、PWMに似ない速度（DETECT_PWM_LIKE_MAX_BAUD より速い）
+  DETECT_PWM_LIKE_BAUDS,   // それ以外で、PWMに似る速度（DETECT_PWM_LIKE_MAX_BAUD 以下）
+  DETECT_ALL_BAUDS,        // すべての速度（種類を指定した自動判別）
+};
+
+// 通信速度を調べないなら true（isDefault: 工場出荷時の速度か）
+static inline bool detectSkipsBaud(DetectBauds bauds, bool isDefault, unsigned long baud)
+{
+  switch (bauds)
+  {
+  case DETECT_DEFAULT_BAUD:
+    return !isDefault;
+  case DETECT_OTHER_FAST_BAUDS:
+    return isDefault || baud <= DETECT_PWM_LIKE_MAX_BAUD;
+  case DETECT_PWM_LIKE_BAUDS:
+    return isDefault || baud > DETECT_PWM_LIKE_MAX_BAUD;
+  default:
+    return false;
+  }
+}
+
 namespace feetech
 {
 SERVO_API_DECLARATIONS
 void setup(uint8_t series); // series: 0 = STS, 1 = SCS
 void loop();
-unsigned long detect(bool defaultBaud, uint8_t *series);
+unsigned long detect(DetectBauds bauds, uint8_t *series);
 void presetBaud(unsigned long baud);
 } // namespace feetech
 
@@ -80,7 +110,7 @@ namespace dynamixel
 SERVO_API_DECLARATIONS
 void setup();
 void loop();
-unsigned long detect(bool defaultBaud);
+unsigned long detect(DetectBauds bauds);
 void presetBaud(unsigned long baud);
 } // namespace dynamixel
 
@@ -89,7 +119,7 @@ namespace futaba
 SERVO_API_DECLARATIONS
 void setup();
 void loop();
-unsigned long detect(bool defaultBaud);
+unsigned long detect(DetectBauds bauds);
 void presetBaud(unsigned long baud);
 } // namespace futaba
 
@@ -114,7 +144,7 @@ namespace kondo
 SERVO_API_DECLARATIONS
 void setup();
 void loop();
-unsigned long detect(bool defaultBaud);
+unsigned long detect(DetectBauds bauds);
 void presetBaud(unsigned long baud);
 } // namespace kondo
 
