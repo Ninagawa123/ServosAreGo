@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """ブラウザ版 ServosAreGo（1ファイルのHTML）を組み立てる。
 
-web/src/index.html に、次のものを埋め込んで web/ServosAreGo.html を出力する。
+web/src/index.html に、次のものを埋め込んで ServosAreGo.html（リポジトリの第一階層）を出力する。
   - ファームウェア（PlatformIO のビルド結果: bootloader / partitions / boot_app0 / firmware）
   - 書き込み用ライブラリ esptool-js（web/vendor/esptool-js.bundle.js）
   - ロゴ（web/assets/logo.png）
@@ -21,7 +21,7 @@ import sys
 WEB_DIR = os.path.dirname(os.path.abspath(__file__))
 PROJECT_DIR = os.path.join(WEB_DIR, "..", "ServosAreGo")
 BUILD_DIR = os.path.join(PROJECT_DIR, ".pio", "build", "esp32dev")
-OUTPUT = os.path.join(WEB_DIR, "ServosAreGo.html")
+OUTPUT = os.path.normpath(os.path.join(WEB_DIR, "..", "ServosAreGo.html"))
 
 # 書き込みアドレス（ESP32 Arduino の標準配置）
 FLASH_PARTS = [
