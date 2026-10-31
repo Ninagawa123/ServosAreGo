@@ -19,7 +19,7 @@ ESP32 で、各社のシリアルサーボと PWM サーボの **ID・通信速�
 
 ### 1. ファームウェアを書き込む
 
-1. このブランチからDLした [`web/ServosAreGo.html`](web/ServosAreGo.html) を、PC の **Chrome** で開きます（インストール不要。ファームウェアも HTML に入っています）。
+1. このブランチからDLした [`ServosAreGo.html`](ServosAreGo.html) を、PC の **Chrome** で開きます（インストール不要。ファームウェアも HTML に入っています）。
 2. ESP32（Meridian Board）を USB で PC につなぎ、**① 接続** の「接続」を押してポートを選びます。
 3. **② ファームウェア** の「書き込む」を押します（30 秒ほど）。
    始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離します。
@@ -146,12 +146,13 @@ pio device monitor   # シリアルモニター（115200 bps）
 
 ```bash
 cd web
-python3 build_html.py            # pio run でビルドしてから web/ServosAreGo.html を作る
+python3 build_html.py            # pio run でビルドしてから ServosAreGo.html（第一階層）を作る
 python3 build_html.py --no-build # 今あるビルド結果で作る
 ```
 
 ```
 ServosAreGo/
+├── ServosAreGo.html      ブラウザ版（これを開く）
 ├── ServosAreGo/          ファームウェア（PlatformIO）
 │   ├── platformio.ini    ピン設定（TX1=27, RX1=32）
 │   └── src/
@@ -159,7 +160,6 @@ ServosAreGo/
 │       ├── servo_bus.h   半二重サーボバス（配線 ①/② 共通）
 │       └── setter_*.cpp  種類ごとの処理
 ├── web/
-│   ├── ServosAreGo.html  ブラウザ版（これを開く）
 │   ├── src/index.html    ブラウザ版のソース
 │   └── build_html.py     ブラウザ版を組み立てるスクリプト
 └── img/
