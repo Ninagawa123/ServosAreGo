@@ -19,7 +19,7 @@ Supported: PWM / Feetech STS・SCS / Dynamixel / Futaba TTL / JR XBUS / Hitec HS
 
 ### 1. Flash the firmware
 
-1. Download [`web/ServosAreGo.html`](web/ServosAreGo.html) from this branch and open it in **Chrome** on a PC (nothing to install; the firmware is included in the HTML).
+1. Download [`ServosAreGo.html`](ServosAreGo.html) from this branch and open it in **Chrome** on a PC (nothing to install; the firmware is included in the HTML).
 2. Connect the ESP32 (Meridian Board) to the PC by USB, press "Connect" in **(1) Connect**, and select the port.
 3. Press "Flash" in **(2) Firmware** (about 30 s).
    If it does not start, hold the BOOT button on the board, press "Flash", and release it when writing starts.
@@ -146,12 +146,13 @@ The browser HTML is built by embedding the built firmware.
 
 ```bash
 cd web
-python3 build_html.py            # run pio run, then build web/ServosAreGo.html
+python3 build_html.py            # run pio run, then build ServosAreGo.html (top level)
 python3 build_html.py --no-build # build with the existing build output
 ```
 
 ```
 ServosAreGo/
+├── ServosAreGo.html      Browser version (open this)
 ├── ServosAreGo/          Firmware (PlatformIO)
 │   ├── platformio.ini    Pin settings (TX1=27, RX1=32)
 │   └── src/
@@ -159,7 +160,6 @@ ServosAreGo/
 │       ├── servo_bus.h   Half-duplex servo bus (shared by wiring (1)/(2))
 │       └── setter_*.cpp  Per-type handling
 ├── web/
-│   ├── ServosAreGo.html  Browser version (open this)
 │   ├── src/index.html    Browser version source
 │   └── build_html.py     Script that builds the browser version
 └── img/
