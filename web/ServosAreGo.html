@@ -232,7 +232,8 @@ const I18N = {
     fwTitle: "ファームウェア", fwEmbedded: "このページの版", fwBoard: "ボードの版", flash: "書き込む",
     flashHint: "書き込みには30秒ほどかかります。始まらないときは、ボードの BOOT ボタンを押したまま「書き込む」を押し、書き込みが始まったら離してください。",
     fwNone: "ServosAreGo が見つかりません。「書き込む」でファームウェアを書き込んでください。",
-    fwOld: "ボードの版がこのページと違います。「書き込む」で更新できます。",
+    fwOld: "古いファームウェア（{board}）が見つかりました。ファームウェアをアップデートしてください。「書き込む」を押すと {page} に更新できます。",
+    fwNewer: "ボードの版（{board}）は、このページ（{page}）より新しい版です。",
     fwOk: "最新のファームウェアです。",
     flashConfirm: "ESP32 に ServosAreGo を書き込みます。よろしいですか？",
     flashDone: "書き込みが終わりました。起動を待っています…", flashFail: "書き込みに失敗しました：",
@@ -275,7 +276,8 @@ const I18N = {
     fwTitle: "Firmware", fwEmbedded: "This page", fwBoard: "Board", flash: "Flash",
     flashHint: "Flashing takes about 30 s. If it does not start, hold the BOOT button on the board, press Flash, and release when writing starts.",
     fwNone: "ServosAreGo was not found. Press Flash to write the firmware.",
-    fwOld: "The board firmware differs from this page. Press Flash to update.",
+    fwOld: "Old firmware ({board}) was found. Please update the firmware. Press Flash to update to {page}.",
+    fwNewer: "The board firmware ({board}) is newer than this page ({page}).",
     fwOk: "Firmware is up to date.",
     flashConfirm: "Write ServosAreGo to the ESP32?",
     flashDone: "Flashing finished. Waiting for the board to start…", flashFail: "Flashing failed: ",
@@ -577,9 +579,22 @@ async function connectFlow(port) {
   renderAll();
 }
 
+// "0.1.2" と "0.1.3" のような版を数値で比べる（版が分からないものは古い扱い）
+function compareVersion(a, b) {
+  const pa = String(a || "0").split(".").map(n => parseInt(n, 10) || 0);
+  const pb = String(b || "0").split(".").map(n => parseInt(n, 10) || 0);
+  for (let i = 0; i < Math.max(pa.length, pb.length); i++) {
+    const d = (pa[i] || 0) - (pb[i] || 0);
+    if (d) return d < 0 ? -1 : 1;
+  }
+  return 0;
+}
 function checkFirmwareVersion() {
   if (!state.fw) return;
-  if (state.fw.ver !== EMBEDDED_VERSION) setMsg("fwMsg", t("fwOld"), "warn");
+  const vars = { board: state.fw.ver || "?", page: EMBEDDED_VERSION };
+  const cmp = compareVersion(state.fw.ver, EMBEDDED_VERSION);
+  if (cmp < 0) setMsg("fwMsg", t("fwOld", vars), "warn");
+  else if (cmp > 0) setMsg("fwMsg", t("fwNewer", vars), "warn");
   else setMsg("fwMsg", t("fwOk"), "ok");
   if (state.phase === "nofw") setPhase("connected");
 }
