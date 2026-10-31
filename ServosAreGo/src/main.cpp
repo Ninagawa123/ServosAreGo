@@ -15,7 +15,7 @@
 #include <esp_system.h>
 #include "servo_select.h"
 
-#define FW_VERSION "0.1.2"          // ブラウザ版が書き込み済みの版を確かめるのに使う
+#define FW_VERSION "0.1.3"          // ブラウザ版が書き込み済みの版を確かめるのに使う
 #define SELECT_TIMEOUT 5000          // 前回の種類で自動起動するまでの待ち(ms)
 #define BOOT_MAGIC 0x53415247UL      // 再起動後の動作（bootAction）が有効である目印
 #define NVS_KEY_KIND "type"         // 種類の保存キー（並びを変えたら名前も変え、古い番号を使わない）
